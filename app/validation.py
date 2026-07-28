@@ -1,0 +1,33 @@
+import re
+from urllib.parse import urlparse
+
+from .errors import InvalidInstagramUrl
+
+
+ALLOWED_HOSTS = {"instagram.com", "www.instagram.com", "instagr.am", "www.instagr.am"}
+URL_PATTERN = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+
+
+def extract_url(text: str) -> str | None:
+    match = URL_PATTERN.search(text)
+    if not match:
+        return None
+    return match.group(0).rstrip(".,!?)]}")
+
+
+def validate_instagram_url(value: str) -> str:
+    parsed = urlparse(value.strip())
+    host = (parsed.hostname or "").lower().rstrip(".")
+
+    if parsed.scheme not in {"http", "https"} or host not in ALLOWED_HOSTS:
+        raise InvalidInstagramUrl("Faqat Instagram havolalari qo‘llab-quvvatlanadi.")
+
+    if not parsed.path or parsed.path == "/":
+        raise InvalidInstagramUrl("Media post yoki Reel havolasini yuboring.")
+
+    supported_prefixes = ("/p/", "/reel/", "/reels/", "/tv/", "/stories/")
+    if not parsed.path.startswith(supported_prefixes):
+        raise InvalidInstagramUrl("Bu Instagram havolasi media postga o‘xshamaydi.")
+
+    return value.strip()
+

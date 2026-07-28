@@ -1,0 +1,2 @@
+"""MediaHub Telegram bot application."""
+
