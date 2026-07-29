@@ -8,14 +8,43 @@ MediaHub — Telegram bot orqali public Instagram Reel, video, rasm va carousel 
 - public Reel, video, rasm va carousel uchun downloader adapteri;
 - stream-first Telegram upload (`URLInputFile`);
 - stream ishlamasa, chunked temporary-file fallback;
-- Redis queue va cheklangan worker pool;
+- Postgres (Supabase) asosidagi queue va cheklangan worker pool — Redis kerak emas;
 - 100+ parallel so‘rovda queue limit, rate limit va backpressure;
 - foydalanuvchi uchun faol job limiti va kunlik limit;
 - retry/fallback, timeout, cleanup va xatolik xabarlari;
+- majburiy obuna (force-subscribe) — kanal(lar)ga qo‘shilmagan foydalanuvchi botdan foydalana olmaydi;
+- faqat admin uchun panel: `/admin`, `/stats`, va flood-safe `/broadcast`;
 - `/health` endpoint;
 - Telegram webhook va webhook-secret validation.
 
 Private kontent, login ma’lumotlarini yig‘ish yoki Instagram himoyasini chetlab o‘tish funksiyalari yo‘q.
+
+## Admin va majburiy obuna
+
+`.env` faylida faqat admin ro'yxatini beriladi:
+
+```env
+ADMIN_IDS=123456789,987654321
+```
+
+- `ADMIN_IDS` ro‘yxatidagi Telegram ID’lar `/admin`, `/stats`, `/broadcast`,
+  `/addchannel`, `/removechannel`, `/channels` buyruqlaridan foydalana
+  oladi. Boshqa hech kim bu buyruqlarni ko‘rmaydi ham, ishlata olmaydi ham.
+- Majburiy obuna kanallari `.env`da emas, **bot ichidan** boshqariladi:
+  - `/addchannel @kanal` yoki `/addchannel -1001234567890` — kanal qo‘shish.
+    Bot avval o‘sha kanalda haqiqatan ham admin ekanini tekshiradi va
+    bo‘lmasa aniq xato qaytaradi (shu tufayli keyinroq "majburiy obuna
+    hech kimga ishlamayapti" degan holat oldindan oldi olinadi).
+  - `/channels` — hozirgi ro‘yxatni ko‘rish.
+  - `/removechannel N` — `/channels` ro‘yxatidagi N-raqamli kanalni o‘chirish.
+  - Ro‘yxat bo‘sh bo‘lsa, majburiy obuna tekshiruvi butunlay o‘chirilgan
+    hisoblanadi — hech kim bloklanmaydi.
+- `/broadcast` — admin matn yuborganda, bot barcha (bloklamagan)
+  foydalanuvchilarga kichik partiyalarda, Telegram flood-limitidan pastda
+  yuboradi; `TelegramRetryAfter` chiqsa avtomatik kutib qayta urinadi,
+  `TelegramForbiddenError` (bot bloklangan) chiqsa foydalanuvchi
+  "bloklangan" deb belgilanadi va keyingi broadcast’larda o‘tkazib
+  yuboriladi.
 
 ## Ishga tushirish
 

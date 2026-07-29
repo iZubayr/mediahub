@@ -1,32 +1,46 @@
-# MediaHub’ni AlwaysData Free’ga joylashtirish
+# MediaHub'ni AlwaysData'ga joylashtirish (Supabase Postgres bilan, Redis'siz)
 
-Ushbu loyiha AlwaysData’da Telegram webhook va Redis worker bilan ishlaydi. Shuning uchun bitta HTTP User Program va bitta background service kerak:
+AlwaysData Free/Shared tarifida Redis'ni SSH orqali compile qilish RAM
+yetishmasligi tufayli barqaror ishlamaydi (`ld terminated with signal 9`
+xatosi shundan). Shu sababli bu versiyada Redis butunlay olib tashlangan va
+o'rniga siz allaqachon ishlatayotgan **Supabase Postgres** ishlatiladi:
 
-1. `mediahub-webhook` — Telegram update’larni HTTPS orqali qabul qiladi.
-2. `mediahub-worker` — Redis queue’dan vazifalarni olib, Instagram media’ni yuklaydi va Telegram’ga yuboradi.
+- Navbat (queue) — `mediahub_jobs` jadvali, `SELECT ... FOR UPDATE SKIP LOCKED`
+  orqali (Postgres'dagi standart, ishonchli job-queue patterni).
+- Rate limit va foydalanuvchi limitlari — `mediahub_rate_minute`,
+  `mediahub_rate_daily`, `mediahub_active_jobs` jadvallari.
+- Jadvallar birinchi ishga tushishda avtomatik yaratiladi (`app/db.py`).
 
-AlwaysData free planida Docker’ga tayanilmaydi. Python paketlari SSH orqali virtual environment ichiga o‘rnatiladi. AlwaysData Python uchun `python -m pip install -r requirements.txt` usulini va foreground service’larni qo‘llab-quvvatlaydi.
+Hech qanday qo'shimcha compile, Service yoki Redis kerak emas — faqat ikkita
+narsa kerak: **Webhook (Site)** va **Worker (Service)**, ikkalasi ham bitta
+Supabase bazasiga ulanadi.
 
-## 1. Fayllarni serverga yuklash
+## 1. Supabase tayyorlash
 
-SSH yoki SFTP orqali `mediahub` papkasini account home directory’ga yuklang:
+1. Supabase loyihangiz Dashboard > **Project Settings > Database** ga o'ting.
+2. **Connection string** bo'limidan **Session pooler** (yoki Transaction
+   pooler) manzilini oling — bu manzil `pgbouncer` orqali ishlaydi va ko'p
+   qisqa muddatli ulanishlar (bizning holatimizda ideal) uchun mos.
+3. Format taxminan shunday bo'ladi:
+   ```
+   postgresql://postgres.xxxxxxxx:PAROL@aws-0-region.pooler.supabase.com:6543/postgres
+   ```
+4. Parolni URL-encode qiling agar maxsus belgilar bo'lsa (`@`, `#`, va h.k.).
+
+## 2. Fayllarni serverga yuklash
 
 ```bash
-cd /home/ACCOUNT
-git clone YOUR_REPOSITORY_URL mediahub
+cd /home/zubayr
+git clone git@github.com:iZubayr/mediahub.git
 cd mediahub
 ```
 
-Repository ishlatilmasa, `app/`, `requirements.txt`, `.env`, `plan.md` va `pytest.ini` fayllarini SFTP orqali yuklash mumkin.
+## 3. Python environment
 
-## 2. Python environment
-
-AlwaysData’da Python versiyasini 3.12 qilib tanlang: `Environment > Python`.
-
-SSH terminalda:
+Dashboard'da **Environment > Python** bo'limidan versiyani 3.12 qiling.
 
 ```bash
-cd /home/ACCOUNT/mediahub
+cd /home/zubayr/mediahub
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
@@ -35,139 +49,155 @@ mkdir -p tmp
 chmod 700 tmp
 ```
 
-## 3. Redis service
-
-Free/Public Cloud’da Redis’ni account ichida alohida service sifatida compile qilish mumkin:
-
-```bash
-cd /home/ACCOUNT
-mkdir -p redis
-cd redis
-wget -O- https://download.redis.io/redis-stable.tar.gz | tar -xz --strip-components=1
-make
-```
-
-AlwaysData panelida `Advanced > Services > Add` orqali Redis service yarating:
-
-- Name: `mediahub-redis`
-- Command: `./src/redis-server --bind :: --port 8300 --protected-mode no`
-- Working directory: `/home/ACCOUNT/redis`
-- Monitoring command: `./src/redis-cli -h services-ACCOUNT.alwaysdata.net -p 8300 ping`
-
-Redis tashqi service hostname orqali ulanadi:
-
-```env
-REDIS_URL=redis://services-ACCOUNT.alwaysdata.net:8300/0
-```
-
-Redis’ni parolsiz ochiq qoldirish tavsiya etilmaydi. Redis ACL’da parol o‘rnatilgandan keyin:
-
-```env
-REDIS_URL=redis://default:REDIS_PASSWORD@services-ACCOUNT.alwaysdata.net:8300/0
-```
-
 ## 4. `.env` sozlamalari
 
-Serverdagi `/home/ACCOUNT/mediahub/.env` fayliga quyidagilarni yozing:
-
 ```env
-TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
-REDIS_URL=redis://default:REDIS_PASSWORD@services-ACCOUNT.alwaysdata.net:8300/0
+TELEGRAM_BOT_TOKEN=YANGI_TOKEN_BOTFATHERDAN
+DATABASE_URL=postgresql://postgres.xxxxxxxx:PAROL@aws-0-region.pooler.supabase.com:6543/postgres
 
-QUEUE_NAME=mediahub:downloads
-PROCESSING_QUEUE_NAME=mediahub:downloads:processing
-MAX_QUEUE_SIZE=100
-WORKER_CONCURRENCY=1
-REQUESTS_PER_MINUTE=5
-MAX_ACTIVE_JOBS_PER_USER=1
-DAILY_DOWNLOAD_LIMIT=30
-MAX_MEDIA_SIZE_MB=25
+PUBLIC_BASE_URL=https://zubayr.alwaysdata.net
+WEBHOOK_PATH=/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET=kamida-16-belgili-tasodifiy-string
+WEBHOOK_HOST=0.0.0.0
+WEBHOOK_PORT=8080
+
+MAX_QUEUE_SIZE=500
+WORKER_CONCURRENCY=4
+POLL_INTERVAL_SECONDS=1.5
+STUCK_JOB_TIMEOUT_SECONDS=600
+
+REQUESTS_PER_MINUTE=10
+MAX_ACTIVE_JOBS_PER_USER=2
+DAILY_DOWNLOAD_LIMIT=100
+
+MAX_MEDIA_SIZE_MB=50
 DOWNLOAD_TIMEOUT_SECONDS=120
 UPLOAD_TIMEOUT_SECONDS=180
 RETRY_ATTEMPTS=2
-TEMP_DIR=/home/ACCOUNT/mediahub/tmp
+TEMP_DIR=/home/zubayr/mediahub/tmp
 INSTAGRAM_COOKIES_FILE=
+
+ADMIN_IDS=your_numeric_telegram_id
 ```
+
+Majburiy obuna kanallari endi `.env`da emas — bot ishga tushgach, Telegram'da
+o'zingizga (admin sifatida) yozing:
+
+```
+/addchannel @your_channel_username
+```
+
+yoki yopiq kanal uchun uning `-100...` bilan boshlanuvchi ID'sini yuboring.
+Kanalni qo'shishdan oldin **botni o'sha kanalga admin qilib qo'shing** —
+bot buni tekshiradi va admin bo'lmasa xato qaytaradi (shu bilan keyinchalik
+"hamma foydalanuvchi bloklanib qoladi" degan holatning oldi olinadi).
+
+Boshqa buyruqlar:
+- `/channels` — hozirgi ro'yxatni ko'rish
+- `/removechannel N` — `/channels` ro'yxatidagi N-raqamli kanalni o'chirish
+
+`ADMIN_IDS`ni bilish uchun Telegram'da @userinfobot'ga yozing — u sizga raqamli ID'ingizni beradi.
 
 ```bash
-chmod 600 /home/ACCOUNT/mediahub/.env
+chmod 600 /home/zubayr/mediahub/.env
 ```
 
-Free plan resurslari kichik bo‘lgani uchun AlwaysData’da `WORKER_CONCURRENCY=1` bilan boshlash tavsiya etiladi.
+**Muhim:** yuqoridagi token bir marta chatda ochiq yozilgan edi — uni
+BotFather'da (`/revoke` yoki yangi token so'rash) albatta almashtiring, keyin
+faqat shu `.env` faylida saqlang.
 
-## 5. Webhook site
+`WORKER_CONCURRENCY=4` — 100 kishilik yuklama uchun boshlang'ich qiymat.
+Agar Supabase bazasida ulanish limitiga tegib qolsangiz (Free tarifda odatda
+~60 ulanish), buni pasaytiring yoki pooler manzilini albatta ishlatganingizga
+ishonch hosil qiling.
 
-AlwaysData panelida `Web > Sites > Add a site` orqali `User program` tanlang:
+## 5. Webhook — Site sifatida
 
-- Address: `ACCOUNT.alwaysdata.net`
+Dashboard > **Web > Sites > Add a site**:
+
+- Address: `zubayr.alwaysdata.net`
 - Type: `User program`
-- Command: `/home/ACCOUNT/mediahub/.venv/bin/uvicorn app.webhook:app --host $IP --port $PORT`
-- Working directory: `/home/ACCOUNT/mediahub`
+- Command:
+  ```
+  /home/zubayr/mediahub/.venv/bin/uvicorn app.webhook:app --host $IP --port $PORT
+  ```
+- Working directory: `/home/zubayr/mediahub`
 
-AlwaysData bergan `IP` va `PORT` environment variables’ini o‘zgartirmang. HTTPS sayt manzili webhook URL bo‘ladi:
+`$IP` va `$PORT`ni AlwaysData avtomatik beradi, o'zgartirmang.
 
-```env
-PUBLIC_BASE_URL=https://ACCOUNT.alwaysdata.net
-WEBHOOK_PATH=/telegram/webhook
-TELEGRAM_WEBHOOK_SECRET=kamida-16-belgili-secret
-```
+## 6. Worker — Service sifatida
 
-## 6. Worker service
-
-Yana bitta service yarating:
+Dashboard > **Advanced > Services > Add a service**:
 
 - Name: `mediahub-worker`
-- Command: `/home/ACCOUNT/mediahub/.venv/bin/python -m app.worker`
-- Working directory: `/home/ACCOUNT/mediahub`
+- Command:
+  ```
+  /home/zubayr/mediahub/.venv/bin/python -m app.worker
+  ```
+- Working directory: `/home/zubayr/mediahub`
 
-Webhook User Program va worker service ishlayotgan bo‘lishi kerak. Worker service to‘xtab qolsa, AlwaysData uni avtomatik qayta ishga tushiradi.
+Worker to'xtab qolsa, AlwaysData uni avtomatik qayta ishga tushiradi.
 
 ## 7. Tekshirish
 
-SSH orqali:
+SSH orqali baza ulanishini tekshiring:
 
 ```bash
-cd /home/ACCOUNT/mediahub
+cd /home/zubayr/mediahub
 . .venv/bin/activate
-python -c "import redis, os; print(redis.from_url(os.environ['REDIS_URL']).ping())"
+python -c "
+import asyncio
+from app.config import Settings
+
+async def check():
+    import asyncpg
+    settings = Settings()
+    conn = await asyncpg.connect(settings.database_url)
+    print(await conn.fetchval('SELECT 1'))
+    await conn.close()
+
+asyncio.run(check())
+"
 ```
 
-Paneldagi `Advanced > Processes > Services` va service loglaridan `mediahub-bot` hamda `mediahub-worker` holatini ko‘ring.
+`1` chiqsa — ulanish ishlayapti.
 
-`https://ACCOUNT.alwaysdata.net/health` manzilini tekshiring. Javobda `"mode": "webhook"` chiqishi kerak. Keyin Telegram’da `/start` yuboring va public Instagram Reel yoki rasm post havolasi bilan tekshiring.
+Keyin:
+- `https://zubayr.alwaysdata.net/health` — javobda `"database": "ok"` va
+  `"mode": "webhook"` chiqishi kerak.
+- Dashboard > **Advanced > Processes > Services** bo'limidan
+  `mediahub-worker` holatini kuzating.
+- Telegram'da botga `/start`, so'ng public Instagram Reel havolasini yuboring.
 
-## 8. Stories haqida muhim eslatma
+## 8. 100 kishilik yuklama haqida eslatma
 
-Instagram story’lar ko‘pincha login talab qiladi. Public bo‘lsa ham downloader login so‘rashi mumkin. Bunday holatda bot endi umumiy xato emas, quyidagi aniq xabarni qaytaradi:
+- Navbat va limitlar endi Redis emas, Supabase orqali ishlaydi — bu biroz
+  sekinroq (har so'rov tarmoq orqali Supabase'ga boradi), lekin AlwaysData
+  Free/Shared'da ancha barqaror, chunki hech narsa compile qilinmaydi va
+  RAM'ga bog'liq emas.
+- Agar keyinchalik yuklama sezilarli oshsa (masalan minglab foydalanuvchi),
+  o'shanda alohida VPS'ga o'tib, haqiqiy Redis qo'shish mantiqan to'g'ri
+  bo'ladi — lekin 100 kishi uchun bu arxitektura yetarli.
+- `STUCK_JOB_TIMEOUT_SECONDS` — agar worker ishlab turgan paytda qulab tushsa
+  yoki qayta ishga tushsa, "processing" holatida qolib ketgan joblar shu
+  vaqtdan keyin avtomatik qayta navbatga qo'shiladi.
 
-`Story olish uchun Instagram login cookie kerak.`
+## 9. Ehtimoliy xatolar
 
-Cookie ishlatish kerak bo‘lsa, faqat o‘zingizga tegishli account cookie faylini xavfsiz joylashtiring va `.env`da yo‘lni ko‘rsating:
+- `RuntimeError: DATABASE_URL is not configured` — `.env` fayli topilmayapti
+  yoki bo'sh; working directory to'g'riligini tekshiring.
+- `too many connections` (Supabase xatosi) — pooler manzilidan
+  foydalanayotganingizni tekshiring (`:6543` porti, `:5432` emas), yoki
+  `WORKER_CONCURRENCY`ni kamaytiring.
+- `ModuleNotFoundError` — `.venv` faollashtirilmagan yoki
+  `pip install -r requirements.txt` bajarilmagan.
+- `You need to log in` — story yoki private kontent login talab qilmoqda,
+  bu kutilgan xatti-harakat.
+- Worker ishlamayapti — Service loglarini va Supabase bazasidagi
+  `mediahub_jobs` jadvalini tekshiring (`SELECT * FROM mediahub_jobs;`).
 
-```env
-INSTAGRAM_COOKIES_FILE=/home/ACCOUNT/mediahub/private/instagram-cookies.txt
-```
+## Rasmiy hujjatlar
 
-```bash
-mkdir -p /home/ACCOUNT/mediahub/private
-chmod 700 /home/ACCOUNT/mediahub/private
-chmod 600 /home/ACCOUNT/mediahub/private/instagram-cookies.txt
-```
-
-Cookie faylini Git’ga yubormang, bot loglariga chiqarmang va foydalanuvchilarga bermang. Cookie muddati tugashi yoki Instagram tomonidan bekor qilinishi mumkin.
-
-## 9. Common errors
-
-- `Connection refused` — Redis service ishlamayapti yoki `REDIS_URL` noto‘g‘ri.
-- `ModuleNotFoundError` — `.venv` tanlanmagan yoki `pip install -r requirements.txt` bajarilmagan.
-- `Permission denied` — `tmp` va private papkalar account user’iga tegishli emas.
-- `You need to log in` — story yoki private kontent cookie/login talab qilmoqda.
-- `Fayl juda katta` — `MAX_MEDIA_SIZE_MB` yoki Telegram limitiga yetilgan.
-- Worker ishlamayapti — Redis queue va service loglarini tekshiring.
-
-## Rasmiy AlwaysData hujjatlari
-
-- Python: https://help.alwaysdata.com/en/docs/web-hosting/languages/python/configuration/
-- Services: https://help.alwaysdata.com/en/docs/web-hosting/services/
-- Redis: https://help.alwaysdata.com/en/docs/development/guides/redis/
-- Docker: https://help.alwaysdata.com/en/docs/development/docker/
+- AlwaysData Python: https://help.alwaysdata.com/en/docs/web-hosting/languages/python/configuration/
+- AlwaysData Services: https://help.alwaysdata.com/en/docs/web-hosting/services/
+- Supabase Database connection: https://supabase.com/docs/guides/database/connecting-to-postgres

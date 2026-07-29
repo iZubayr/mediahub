@@ -1,12 +1,13 @@
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
-from typing import Any
+from uuid import UUID, uuid4
+
+import asyncpg
 
 
 @dataclass(slots=True)
 class DownloadJob:
-    job_id: str
+    job_id: UUID
     user_id: int
     chat_id: int
     status_message_id: int
@@ -17,14 +18,13 @@ class DownloadJob:
     def create(
         cls,
         *,
-        job_id: str,
         user_id: int,
         chat_id: int,
         status_message_id: int,
         source_url: str,
     ) -> "DownloadJob":
         return cls(
-            job_id=job_id,
+            job_id=uuid4(),
             user_id=user_id,
             chat_id=chat_id,
             status_message_id=status_message_id,
@@ -32,11 +32,13 @@ class DownloadJob:
             created_at=datetime.now(timezone.utc).isoformat(),
         )
 
-    def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
-
     @classmethod
-    def from_json(cls, value: str | bytes | bytearray) -> "DownloadJob":
-        data: dict[str, Any] = json.loads(value)
-        return cls(**data)
-
+    def from_row(cls, row: asyncpg.Record) -> "DownloadJob":
+        return cls(
+            job_id=row["job_id"],
+            user_id=row["user_id"],
+            chat_id=row["chat_id"],
+            status_message_id=row["status_message_id"],
+            source_url=row["source_url"],
+            created_at=row["created_at"].isoformat(),
+        )

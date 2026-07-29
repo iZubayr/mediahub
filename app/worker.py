@@ -5,9 +5,9 @@ from pathlib import Path
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, URLInputFile
-from redis.asyncio import Redis
 
 from .config import Settings
+from .db import create_pool
 from .downloader import InstagramDownloader, MediaItem
 from .errors import MediaHubError
 from .limits import RateLimiter
@@ -67,7 +67,7 @@ async def send_item(
 
     # Fallback only runs when URLInputFile/Telegram cannot consume the source
     # stream. The file is downloaded in chunks and removed after upload.
-    temp_path = await downloader.download_to_temp(item, job.job_id, index)
+    temp_path = await downloader.download_to_temp(item, str(job.job_id), index)
     try:
         await _send_file(bot, job.chat_id, item, FSInputFile(temp_path), caption)
         logger.info("fallback_upload_completed job_id=%s index=%s", job.job_id, index)
@@ -127,7 +127,7 @@ async def process_job(
         await update_status(bot, job, f"❌ {user_error_message(error)}")
     finally:
         await limiter.release_job_slot(job.user_id, job.job_id)
-        await downloader.cleanup(job.job_id)
+        await downloader.cleanup(str(job.job_id))
         await queue.acknowledge(job)
 
 
@@ -141,8 +141,21 @@ async def worker_loop(
     while True:
         job = await queue.claim()
         if job is None:
+            await asyncio.sleep(settings.poll_interval_seconds)
             continue
         await process_job(bot, queue, limiter, downloader, settings, job)
+
+
+async def stuck_job_recovery_loop(queue: DownloadQueue, settings: Settings) -> None:
+    # Periodically requeue jobs abandoned by a crashed/restarted worker,
+    # since Postgres has no automatic lock-release like Redis's processing
+    # list recovery had.
+    while True:
+        await asyncio.sleep(max(settings.stuck_job_timeout_seconds // 2, 30))
+        try:
+            await queue.recover_stuck()
+        except Exception:
+            logger.exception("stuck_job_recovery_failed")
 
 
 async def main() -> None:
@@ -151,24 +164,24 @@ async def main() -> None:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
 
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    await redis.ping()
-    queue = DownloadQueue(redis, settings)
-    await queue.recover_processing()
-    limiter = RateLimiter(redis, settings)
+    pool = await create_pool(settings)
+    queue = DownloadQueue(pool, settings)
+    await queue.recover_stuck()
+    limiter = RateLimiter(pool, settings)
     downloader = InstagramDownloader(settings)
     bot = Bot(token=settings.telegram_bot_token)
     tasks = [
         asyncio.create_task(worker_loop(bot, queue, limiter, downloader, settings))
         for _ in range(settings.worker_concurrency)
     ]
+    tasks.append(asyncio.create_task(stuck_job_recovery_loop(queue, settings)))
     try:
         await asyncio.gather(*tasks)
     finally:
         for task in tasks:
             task.cancel()
         await bot.session.close()
-        await redis.aclose()
+        await pool.close()
 
 
 if __name__ == "__main__":

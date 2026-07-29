@@ -1,12 +1,15 @@
 services:
-  redis:
-    image: redis:7-alpine
+  db:
+    image: postgres:16-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes
+    environment:
+      POSTGRES_USER: mediahub
+      POSTGRES_PASSWORD: mediahub
+      POSTGRES_DB: mediahub
     volumes:
-      - redis_data:/data
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "pg_isready -U mediahub"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -16,10 +19,12 @@ services:
     restart: unless-stopped
     command: uvicorn app.webhook:app --host 0.0.0.0 --port 8080
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mediahub:mediahub@db:5432/mediahub
     ports:
       - "8080:8080"
     depends_on:
-      redis:
+      db:
         condition: service_healthy
 
   worker:
@@ -27,20 +32,24 @@ services:
     restart: unless-stopped
     command: python -m app.worker
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mediahub:mediahub@db:5432/mediahub
     depends_on:
-      redis:
+      db:
         condition: service_healthy
 
   api:
     build: .
     restart: unless-stopped
-    command: uvicorn app.api:app --host 0.0.0.0 --port 8080
+    command: uvicorn app.api:app --host 0.0.0.0 --port 8081
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mediahub:mediahub@db:5432/mediahub
     ports:
-      - "8080:8080"
+      - "8081:8081"
     depends_on:
-      redis:
+      db:
         condition: service_healthy
 
 volumes:
-  redis_data:
+  pg_data:

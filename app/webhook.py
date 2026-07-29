@@ -7,10 +7,10 @@ from typing import AsyncIterator
 from aiogram import Bot
 from aiogram.types import Update
 from fastapi import FastAPI, HTTPException, Request
-from redis.asyncio import Redis
 
 from .bot import create_dispatcher
 from .config import Settings
+from .db import create_pool
 from .logging_config import configure_logging
 
 
@@ -28,10 +28,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if len(settings.telegram_webhook_secret) < 16:
         raise RuntimeError("TELEGRAM_WEBHOOK_SECRET must contain at least 16 characters")
 
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    await redis.ping()
+    pool = await create_pool(settings)
     bot = Bot(token=settings.telegram_bot_token)
-    dispatcher = create_dispatcher(settings, redis)
+    dispatcher = create_dispatcher(settings, pool)
     await bot.set_webhook(
         url=settings.webhook_url,
         secret_token=settings.telegram_webhook_secret,
@@ -39,24 +38,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.bot = bot
     app.state.dispatcher = dispatcher
-    app.state.redis = redis
+    app.state.pool = pool
     logger.info("webhook_configured url=%s", settings.webhook_url)
     try:
         yield
     finally:
         await bot.delete_webhook(drop_pending_updates=False)
         await bot.session.close()
-        await redis.aclose()
+        await pool.close()
 
 
-app = FastAPI(title="MediaHub Webhook", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="MediaHub Webhook", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    redis: Redis = app.state.redis
-    await redis.ping()
-    return {"status": "ok", "redis": "ok", "mode": "webhook"}
+    async with app.state.pool.acquire() as conn:
+        await conn.fetchval("SELECT 1")
+    return {"status": "ok", "database": "ok", "mode": "webhook"}
 
 
 @app.post(settings.webhook_path)

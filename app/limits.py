@@ -1,62 +1,92 @@
 import time
+from datetime import datetime, timezone
+from uuid import UUID
 
-from redis.asyncio import Redis
+import asyncpg
 
 from .config import Settings
 
 
-CLAIM_JOB_SLOT_SCRIPT = """
-local current = redis.call('SISMEMBER', KEYS[1], ARGV[1])
-if current == 1 then
-    return 1
-end
-local count = redis.call('SCARD', KEYS[1])
-if count >= tonumber(ARGV[2]) then
-    return 0
-end
-redis.call('SADD', KEYS[1], ARGV[1])
-redis.call('EXPIRE', KEYS[1], ARGV[3])
-return 1
-"""
-
-
 class RateLimiter:
-    def __init__(self, redis: Redis, settings: Settings) -> None:
-        self.redis = redis
+    """Postgres-backed replacement for the original Redis rate limiter.
+
+    Uses UPSERT (INSERT ... ON CONFLICT) instead of Redis INCR/EXPIRE, and a
+    plain row-count check instead of the Lua SISMEMBER/SADD script. Old
+    minute/day buckets are cleaned up opportunistically on each call so the
+    tables don't grow forever.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, settings: Settings) -> None:
+        self.pool = pool
         self.settings = settings
 
     async def allow_request(self, user_id: int) -> bool:
         bucket = int(time.time() // 60)
-        key = f"mediahub:rate:{user_id}:{bucket}"
-        value = await self.redis.incr(key)
-        if value == 1:
-            await self.redis.expire(key, 120)
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                """
+                INSERT INTO mediahub_rate_minute (user_id, bucket, count)
+                VALUES ($1, $2, 1)
+                ON CONFLICT (user_id, bucket)
+                DO UPDATE SET count = mediahub_rate_minute.count + 1
+                RETURNING count
+                """,
+                user_id,
+                bucket,
+            )
+            # Best-effort cleanup of old buckets (older than 5 minutes).
+            await conn.execute(
+                "DELETE FROM mediahub_rate_minute WHERE bucket < $1",
+                bucket - 5,
+            )
         return value <= self.settings.requests_per_minute
 
     async def allow_daily_download(self, user_id: int) -> bool:
-        day = time.strftime("%Y-%m-%d", time.gmtime())
-        key = f"mediahub:daily:{user_id}:{day}"
-        value = await self.redis.incr(key)
-        if value == 1:
-            await self.redis.expire(key, 172800)
-        if value <= self.settings.daily_download_limit:
-            return True
-        await self.redis.decr(key)
+        day = datetime.now(timezone.utc).date()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                value = await conn.fetchval(
+                    """
+                    INSERT INTO mediahub_rate_daily (user_id, day, count)
+                    VALUES ($1, $2, 1)
+                    ON CONFLICT (user_id, day)
+                    DO UPDATE SET count = mediahub_rate_daily.count + 1
+                    RETURNING count
+                    """,
+                    user_id,
+                    day,
+                )
+                if value <= self.settings.daily_download_limit:
+                    return True
+                await conn.execute(
+                    "UPDATE mediahub_rate_daily SET count = count - 1 "
+                    "WHERE user_id = $1 AND day = $2",
+                    user_id,
+                    day,
+                )
         return False
 
-    async def acquire_job_slot(self, user_id: int, job_id: str) -> bool:
-        key = f"mediahub:active:{user_id}"
-        result = await self.redis.eval(
-            CLAIM_JOB_SLOT_SCRIPT,
-            1,
-            key,
-            job_id,
-            self.settings.max_active_jobs_per_user,
-            3600,
-        )
-        return bool(result)
+    async def acquire_job_slot(self, user_id: int, job_id: UUID) -> bool:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                count = await conn.fetchval(
+                    "SELECT count(*) FROM mediahub_active_jobs WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if count >= self.settings.max_active_jobs_per_user:
+                    return False
+                await conn.execute(
+                    "INSERT INTO mediahub_active_jobs (user_id, job_id) VALUES ($1, $2) "
+                    "ON CONFLICT DO NOTHING",
+                    user_id,
+                    job_id,
+                )
+        return True
 
-    async def release_job_slot(self, user_id: int, job_id: str) -> None:
-        key = f"mediahub:active:{user_id}"
-        await self.redis.srem(key, job_id)
-
+    async def release_job_slot(self, user_id: int, job_id: UUID) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM mediahub_active_jobs WHERE user_id = $1 AND job_id = $2",
+                user_id,
+                job_id,
+            )

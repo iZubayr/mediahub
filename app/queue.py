@@ -1,6 +1,6 @@
 import logging
 
-from redis.asyncio import Redis
+import asyncpg
 
 from .config import Settings
 from .errors import QueueFull
@@ -11,45 +11,88 @@ logger = logging.getLogger(__name__)
 
 
 class DownloadQueue:
-    def __init__(self, redis: Redis, settings: Settings) -> None:
-        self.redis = redis
+    """Postgres-backed replacement for the original Redis list queue.
+
+    Uses `SELECT ... FOR UPDATE SKIP LOCKED` so multiple worker processes can
+    poll the same table concurrently without claiming the same job twice.
+    This is the standard job-queue pattern for Postgres and needs no extra
+    service beyond the Supabase database AlwaysData already has network
+    access to.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, settings: Settings) -> None:
+        self.pool = pool
         self.settings = settings
-        self.queue_name = settings.queue_name
-        self.processing_queue_name = settings.processing_queue_name
 
     async def size(self) -> int:
-        return int(await self.redis.llen(self.queue_name))
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT count(*) FROM mediahub_jobs WHERE status = 'queued'"
+            )
+        return int(value)
 
     async def enqueue(self, job: DownloadJob) -> None:
-        current_size = await self.size()
-        if current_size >= self.settings.max_queue_size:
-            raise QueueFull("Download queue is full")
-        await self.redis.rpush(self.queue_name, job.to_json())
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                current_size = await conn.fetchval(
+                    "SELECT count(*) FROM mediahub_jobs WHERE status = 'queued' FOR UPDATE"
+                )
+                if current_size >= self.settings.max_queue_size:
+                    raise QueueFull("Download queue is full")
+                await conn.execute(
+                    """
+                    INSERT INTO mediahub_jobs
+                        (job_id, user_id, chat_id, status_message_id, source_url, status)
+                    VALUES ($1, $2, $3, $4, $5, 'queued')
+                    """,
+                    job.job_id,
+                    job.user_id,
+                    job.chat_id,
+                    job.status_message_id,
+                    job.source_url,
+                )
         logger.info("job_enqueued job_id=%s queue_size=%s", job.job_id, current_size + 1)
 
-    async def claim(self, timeout: int = 5) -> DownloadJob | None:
-        # Moving the item to a processing list lets us recover unfinished jobs
-        # after a worker restart instead of silently losing them.
-        value = await self.redis.brpoplpush(
-            self.queue_name,
-            self.processing_queue_name,
-            timeout=timeout,
-        )
-        if value is None:
-            return None
-        return DownloadJob.from_json(value)
+    async def claim(self) -> DownloadJob | None:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM mediahub_jobs
+                    WHERE status = 'queued'
+                    ORDER BY created_at
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                    """
+                )
+                if row is None:
+                    return None
+                await conn.execute(
+                    "UPDATE mediahub_jobs SET status = 'processing', claimed_at = now() "
+                    "WHERE job_id = $1",
+                    row["job_id"],
+                )
+        return DownloadJob.from_row(row)
 
     async def acknowledge(self, job: DownloadJob) -> None:
-        await self.redis.lrem(self.processing_queue_name, 1, job.to_json())
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM mediahub_jobs WHERE job_id = $1", job.job_id
+            )
 
-    async def recover_processing(self) -> int:
-        values = await self.redis.lrange(self.processing_queue_name, 0, -1)
-        if not values:
-            return 0
-
-        await self.redis.delete(self.processing_queue_name)
-        for value in reversed(values):
-            await self.redis.lpush(self.queue_name, value)
-        logger.warning("recovered_jobs count=%s", len(values))
-        return len(values)
-
+    async def recover_stuck(self) -> int:
+        """Requeue jobs that have been stuck in 'processing' too long, e.g.
+        because the worker process was killed or restarted mid-job."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                f"""
+                UPDATE mediahub_jobs
+                SET status = 'queued', claimed_at = NULL
+                WHERE status = 'processing'
+                  AND claimed_at < now() - interval '{self.settings.stuck_job_timeout_seconds} seconds'
+                """
+            )
+        count = int(result.split()[-1]) if result else 0
+        if count:
+            logger.warning("recovered_stuck_jobs count=%s", count)
+        return count
