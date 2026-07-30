@@ -81,6 +81,14 @@ async def create_pool(settings: Settings) -> asyncpg.Pool:
         min_size=1,
         max_size=max(settings.worker_concurrency + 2, 5),
         command_timeout=30,
+        # Supabase's pooler (pgbouncer) does not support prepared statements
+        # in transaction/session pool mode; each pooled connection may be
+        # handed to a different backend session between queries, so a
+        # statement prepared on one backend can collide with or vanish from
+        # another. Disabling asyncpg's statement cache avoids
+        # DuplicatePreparedStatementError entirely. See:
+        # https://magicstack.github.io/asyncpg/current/faq.html#why-am-i-getting-prepared-statement-errors
+        statement_cache_size=0,
     )
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
