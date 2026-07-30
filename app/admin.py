@@ -179,15 +179,14 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
         if _pending_broadcast.pop(message.from_user.id, None):
             await message.answer("Bekor qilindi.")
 
-    @router.message(F.text, F.from_user.func(lambda u: is_admin(settings, u.id)))
+    def _has_pending_broadcast(message: Message) -> bool:
+        return message.from_user is not None and message.from_user.id in _pending_broadcast
+
+    @router.message(F.text, _has_pending_broadcast)
     async def broadcast_text_capture(message: Message, bot: Bot) -> None:
-        if message.from_user is None:
+        if message.from_user is None or message.text is None:
             return
-        if not _pending_broadcast.pop(message.from_user.id, False):
-            return
-        if message.text is None:
-            await message.answer("Faqat matnli xabar yuboring.")
-            return
+        _pending_broadcast.pop(message.from_user.id, None)
         await run_broadcast(bot, pool, admin_id=message.from_user.id, text=message.text)
 
     return router

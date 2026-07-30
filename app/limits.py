@@ -69,11 +69,14 @@ class RateLimiter:
     async def acquire_job_slot(self, user_id: int, job_id: UUID) -> bool:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                count = await conn.fetchval(
-                    "SELECT count(*) FROM mediahub_active_jobs WHERE user_id = $1 FOR UPDATE",
+                # Postgres disallows FOR UPDATE combined with an aggregate
+                # like count(*), so lock the matching rows and count them in
+                # Python instead of in SQL.
+                rows = await conn.fetch(
+                    "SELECT 1 FROM mediahub_active_jobs WHERE user_id = $1 FOR UPDATE",
                     user_id,
                 )
-                if count >= self.settings.max_active_jobs_per_user:
+                if len(rows) >= self.settings.max_active_jobs_per_user:
                     return False
                 await conn.execute(
                     "INSERT INTO mediahub_active_jobs (user_id, job_id) VALUES ($1, $2) "

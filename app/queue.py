@@ -34,9 +34,13 @@ class DownloadQueue:
     async def enqueue(self, job: DownloadJob) -> None:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                current_size = await conn.fetchval(
-                    "SELECT count(*) FROM mediahub_jobs WHERE status = 'queued' FOR UPDATE"
+                # Postgres disallows FOR UPDATE combined with an aggregate
+                # like count(*), so lock the matching rows and count them in
+                # Python instead of in SQL.
+                rows = await conn.fetch(
+                    "SELECT 1 FROM mediahub_jobs WHERE status = 'queued' FOR UPDATE"
                 )
+                current_size = len(rows)
                 if current_size >= self.settings.max_queue_size:
                     raise QueueFull("Download queue is full")
                 await conn.execute(
