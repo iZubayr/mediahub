@@ -8,7 +8,7 @@ from aiogram import Bot
 from aiogram.types import Update
 from fastapi import FastAPI, HTTPException, Request
 
-from .bot import create_dispatcher
+from .bot import create_dispatcher, setup_menu_button
 from .config import Settings
 from .db import create_pool
 from .logging_config import configure_logging
@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         secret_token=settings.telegram_webhook_secret,
         allowed_updates=dispatcher.resolve_used_update_types(),
     )
+    await setup_menu_button(bot, settings)
     app.state.bot = bot
     app.state.dispatcher = dispatcher
     app.state.pool = pool

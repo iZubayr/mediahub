@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     upload_timeout_seconds: int = Field(default=180, alias="UPLOAD_TIMEOUT_SECONDS")
     retry_attempts: int = Field(default=2, alias="RETRY_ATTEMPTS")
     temp_dir: str = Field(default="/tmp/mediahub", alias="TEMP_DIR")
-    instagram_cookies_file: str = Field(default="", alias="INSTAGRAM_COOKIES_FILE")
 
     # Admin panel: comma-separated Telegram numeric user IDs, e.g. "111,222".
     # These are the only accounts allowed to use /admin, /broadcast, /stats,

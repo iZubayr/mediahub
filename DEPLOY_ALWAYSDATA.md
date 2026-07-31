@@ -75,10 +75,16 @@ DOWNLOAD_TIMEOUT_SECONDS=120
 UPLOAD_TIMEOUT_SECONDS=180
 RETRY_ATTEMPTS=2
 TEMP_DIR=/home/zubayr/mediahub/tmp
-INSTAGRAM_COOKIES_FILE=
 
 ADMIN_IDS=your_numeric_telegram_id
 ```
+
+**Story va private kontent qasddan qo'llab-quvvatlanmaydi.** Bot Instagram
+login cookie orqali ishlashni butunlay ishlatmaydi — bunday sessiya botning
+har bir foydalanuvchisi nomidan sizning shaxsiy Instagram hisobingizni
+ishlatgan bo'lardi, va bu hisobingiz bloklanish xavfini oshiradi. Bot faqat
+public post, Reel va carouselni qo'llab-quvvatlaydi; story havolasi yuborilsa,
+foydalanuvchiga aniq xabar bilan rad etiladi.
 
 Majburiy obuna kanallari endi `.env`da emas — bot ishga tushgach, Telegram'da
 o'zingizga (admin sifatida) yozing:

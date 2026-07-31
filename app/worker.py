@@ -2,6 +2,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+import asyncpg
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, URLInputFile
@@ -14,6 +15,7 @@ from .limits import RateLimiter
 from .logging_config import configure_logging
 from .models import DownloadJob
 from .queue import DownloadQueue
+from .texts import get_text
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ async def update_status(bot: Bot, job: DownloadJob, text: str) -> None:
 
 async def send_item(
     bot: Bot,
+    pool: asyncpg.Pool,
     downloader: InstagramDownloader,
     settings: Settings,
     job: DownloadJob,
@@ -39,7 +42,8 @@ async def send_item(
     index: int,
     total: int,
 ) -> None:
-    caption = f"MediaHub • {index}/{total}" if total > 1 else "MediaHub"
+    caption_base = await get_text(pool, "media_caption")
+    caption = f"{caption_base} • {index}/{total}" if total > 1 else caption_base
     for attempt in range(settings.retry_attempts + 1):
         direct_file = URLInputFile(
             item.url,
@@ -95,16 +99,17 @@ async def _send_file(
         await bot.send_document(chat_id=chat_id, document=input_file, caption=caption)
 
 
-def user_error_message(error: Exception) -> str:
+async def user_error_message(pool: asyncpg.Pool, error: Exception) -> str:
     if isinstance(error, MediaHubError):
         return str(error)
     if isinstance(error, TelegramAPIError):
         return "Faylni Telegram’ga yuborishda xatolik yuz berdi."
-    return "Yuklash vaqtida kutilmagan xatolik yuz berdi. Keyinroq qayta urinib ko‘ring."
+    return await get_text(pool, "unexpected_download_error")
 
 
 async def process_job(
     bot: Bot,
+    pool: asyncpg.Pool,
     queue: DownloadQueue,
     limiter: RateLimiter,
     downloader: InstagramDownloader,
@@ -112,19 +117,26 @@ async def process_job(
     job: DownloadJob,
 ) -> None:
     try:
-        await update_status(bot, job, "🔎 Instagram kontenti tekshirilmoqda...")
-        items = await downloader.resolve(job.source_url)
+        await update_status(bot, job, await get_text(pool, "checking"))
+        result = await downloader.resolve(job.source_url)
+        items = result.items
         total = len(items)
 
         for index, item in enumerate(items, start=1):
-            await update_status(bot, job, f"⬆️ Yuklanmoqda: {index}/{total}")
-            await send_item(bot, downloader, settings, job, item, index, total)
+            await update_status(
+                bot, job, await get_text(pool, "uploading", index=index, total=total)
+            )
+            await send_item(bot, pool, downloader, settings, job, item, index, total)
 
-        await update_status(bot, job, "✅ Tayyor. Media fayl(lar) yuborildi.")
-        logger.info("job_completed job_id=%s items=%s", job.job_id, total)
+        if result.partial:
+            await update_status(bot, job, await get_text(pool, "partial_carousel"))
+        else:
+            await update_status(bot, job, await get_text(pool, "done"))
+        logger.info("job_completed job_id=%s items=%s partial=%s", job.job_id, total, result.partial)
     except Exception as error:
         logger.exception("job_failed job_id=%s", job.job_id)
-        await update_status(bot, job, f"❌ {user_error_message(error)}")
+        message = await user_error_message(pool, error)
+        await update_status(bot, job, f"❌ {message}")
     finally:
         await limiter.release_job_slot(job.user_id, job.job_id)
         await downloader.cleanup(str(job.job_id))
@@ -133,17 +145,35 @@ async def process_job(
 
 async def worker_loop(
     bot: Bot,
+    pool: asyncpg.Pool,
     queue: DownloadQueue,
     limiter: RateLimiter,
     downloader: InstagramDownloader,
     settings: Settings,
 ) -> None:
     while True:
-        job = await queue.claim()
+        try:
+            job = await queue.claim()
+        except Exception:
+            # A transient DB/network hiccup here must not kill this loop —
+            # without this guard, one failed claim() would propagate out of
+            # asyncio.gather() in main() and take the entire worker process
+            # offline until someone notices and restarts it by hand.
+            logger.exception("queue_claim_failed")
+            await asyncio.sleep(settings.poll_interval_seconds)
+            continue
+
         if job is None:
             await asyncio.sleep(settings.poll_interval_seconds)
             continue
-        await process_job(bot, queue, limiter, downloader, settings, job)
+
+        try:
+            await process_job(bot, pool, queue, limiter, downloader, settings, job)
+        except Exception:
+            # process_job already handles and reports expected errors to the
+            # user; this is a final safety net for anything that slipped
+            # through, so a single bad job can't kill the whole worker.
+            logger.exception("process_job_crashed job_id=%s", job.job_id)
 
 
 async def stuck_job_recovery_loop(queue: DownloadQueue, settings: Settings) -> None:
@@ -156,6 +186,29 @@ async def stuck_job_recovery_loop(queue: DownloadQueue, settings: Settings) -> N
             await queue.recover_stuck()
         except Exception:
             logger.exception("stuck_job_recovery_failed")
+
+
+async def _supervised_worker(
+    bot: Bot,
+    pool: asyncpg.Pool,
+    queue: DownloadQueue,
+    limiter: RateLimiter,
+    downloader: InstagramDownloader,
+    settings: Settings,
+    worker_index: int,
+) -> None:
+    """Wraps worker_loop so that if it ever exits unexpectedly (it shouldn't,
+    since worker_loop already catches everything internally, but this is a
+    last-resort safety net), it gets logged and restarted instead of quietly
+    reducing worker capacity until the whole process is restarted by hand."""
+    while True:
+        try:
+            await worker_loop(bot, pool, queue, limiter, downloader, settings)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("worker_%s_crashed_restarting", worker_index)
+            await asyncio.sleep(5)
 
 
 async def main() -> None:
@@ -171,12 +224,17 @@ async def main() -> None:
     downloader = InstagramDownloader(settings)
     bot = Bot(token=settings.telegram_bot_token)
     tasks = [
-        asyncio.create_task(worker_loop(bot, queue, limiter, downloader, settings))
-        for _ in range(settings.worker_concurrency)
+        asyncio.create_task(
+            _supervised_worker(bot, pool, queue, limiter, downloader, settings, index)
+        )
+        for index in range(settings.worker_concurrency)
     ]
     tasks.append(asyncio.create_task(stuck_job_recovery_loop(queue, settings)))
     try:
-        await asyncio.gather(*tasks)
+        # return_exceptions=True: one task's unhandled exception must not
+        # cancel every other still-healthy worker task via gather's default
+        # fail-fast behavior.
+        await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         for task in tasks:
             task.cancel()

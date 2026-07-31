@@ -14,7 +14,6 @@ from yt_dlp.utils import DownloadError
 
 from .config import Settings
 from .errors import (
-    AuthenticationRequired,
     MediaNotFound,
     MediaTooLarge,
     PrivateMedia,
@@ -46,13 +45,23 @@ class MediaItem:
     headers: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class ResolveResult:
+    items: list[MediaItem]
+    partial: bool = False
+    """True when only a single image could be recovered for a URL pattern
+    that supports multiple images (carousel), meaning some images may be
+    missing. False for reels/videos/single-image posts, where one item is
+    the complete, expected result."""
+
+
 class InstagramDownloader:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def resolve(self, source_url: str) -> list[MediaItem]:
+    async def resolve(self, source_url: str) -> ResolveResult:
         try:
-            info = await asyncio.to_thread(self._extract_info, source_url)
+            info, partial = await asyncio.to_thread(self._extract_info, source_url)
         except DownloadError as exc:
             raise self._map_download_error(exc) from exc
 
@@ -71,9 +80,9 @@ class InstagramDownloader:
 
         if not items:
             raise MediaNotFound("Media topilmadi.")
-        return items
+        return ResolveResult(items=items, partial=partial and len(items) == 1)
 
-    def _extract_info(self, source_url: str) -> dict[str, Any]:
+    def _extract_info(self, source_url: str) -> tuple[dict[str, Any], bool]:
         options = {
             "quiet": True,
             "no_warnings": True,
@@ -82,26 +91,42 @@ class InstagramDownloader:
             "format": "best[ext=mp4]/best",
             "http_headers": {"User-Agent": self._user_agent()},
         }
-        if self.settings.instagram_cookies_file:
-            cookie_file = Path(self.settings.instagram_cookies_file)
-            if cookie_file.is_file():
-                options["cookiefile"] = str(cookie_file)
+        # Deliberately no cookie/login support: authenticating as a real
+        # Instagram account to scrape on behalf of arbitrary bot users risks
+        # that account being flagged and banned by Instagram, and the bot is
+        # scoped to public content only (see validation.py, which rejects
+        # story URLs outright since those need a logged-in session).
 
         with YoutubeDL(options) as ydl:
             try:
                 info = ydl.extract_info(source_url, download=False)
             except DownloadError as exc:
-                # yt-dlp's Instagram extractor treats image-only posts as
-                # "no video". Public pages still expose an og:image tag,
-                # which is a useful streamable fallback for single-image posts.
-                if "there is no video in this post" in str(exc).lower():
-                    return self._extract_open_graph(source_url)
+                message = str(exc).lower()
+                # yt-dlp's Instagram extractor raises this specific message
+                # for image-only posts (it only looks for a video stream).
+                # The og: meta tag scrape is a single-image fallback for
+                # exactly that case. It is NOT a general-purpose fallback:
+                # login walls, rate limits, and deleted posts should surface
+                # as their real error rather than silently trying a scrape
+                # that would just fail again with a confusing message.
+                if "there is no video in this post" in message:
+                    try:
+                        return self._extract_open_graph(source_url), True
+                    except UnsupportedMedia:
+                        pass
                 raise
         if not isinstance(info, dict):
             raise MediaNotFound("Media ma’lumotlari topilmadi.")
-        return info
+        return info, False
 
     def _extract_open_graph(self, source_url: str) -> dict[str, Any]:
+        """Best-effort fallback for single-image posts that yt-dlp's video
+        extractor skips. Instagram's server-rendered HTML only exposes ONE
+        og:image tag even for carousel posts (the rest are loaded by
+        client-side JS), so this can only ever recover the first image of a
+        carousel, never all of them. Callers should treat a returned entry
+        count of 1 from this path as "possibly partial" for carousel URLs.
+        """
         try:
             with httpx.Client(
                 timeout=30.0,
@@ -294,17 +319,24 @@ class InstagramDownloader:
     def _map_download_error(exc: DownloadError) -> Exception:
         message = str(exc).lower()
         if any(word in message for word in ("you need to log in", "login required", "sign in")):
-            if "story" in message:
-                return AuthenticationRequired(
-                    "Story olish uchun Instagram login cookie kerak. Public story ham login talab qilishi mumkin."
-                )
             return PrivateMedia("Bu kontentga kirish uchun Instagram login talab qilinmoqda.")
         if "private" in message:
             return PrivateMedia("Private kontentni yuklab bo‘lmaydi.")
-        if any(word in message for word in ("not found", "does not exist", "unable to download webpage")):
+        if any(
+            word in message
+            for word in ("not found", "does not exist", "unable to download webpage", "404")
+        ):
             return MediaNotFound("Media topilmadi yoki o‘chirilgan.")
         if "there is no video in this post" in message:
             return UnsupportedMedia(
                 "Bu postdagi media rasm yoki qo‘llab-quvvatlanmaydigan turda."
+            )
+        if any(word in message for word in ("rate-limit", "rate limit", "429", "too many requests")):
+            return UnsupportedMedia(
+                "Instagram vaqtincha ko‘p so‘rovlarni cheklamoqda. Birozdan keyin qayta urinib ko‘ring."
+            )
+        if any(word in message for word in ("timed out", "timeout", "connection")):
+            return UnsupportedMedia(
+                "Instagram’ga ulanishda muammo yuz berdi. Qayta urinib ko‘ring."
             )
         return UnsupportedMedia("Instagram media ma’lumotlarini olishning imkoni bo‘lmadi.")

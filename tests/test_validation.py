@@ -16,7 +16,6 @@ def test_extract_url_from_text() -> None:
     [
         "https://www.instagram.com/reel/ABC123/",
         "https://instagram.com/p/ABC123/",
-        "https://www.instagram.com/stories/user/123/",
     ],
 )
 def test_valid_instagram_media_urls(value: str) -> None:
@@ -29,6 +28,7 @@ def test_valid_instagram_media_urls(value: str) -> None:
         "https://instagram.com.evil.example/p/ABC123/",
         "https://example.com/reel/ABC123/",
         "https://www.instagram.com/username/",
+        "https://www.instagram.com/stories/user/123/",
         "not-a-url",
     ],
 )
@@ -37,8 +37,15 @@ def test_invalid_instagram_urls(value: str) -> None:
         validate_instagram_url(value)
 
 
-def test_story_login_error_is_user_friendly() -> None:
+def test_story_url_rejected_with_clear_message() -> None:
+    with pytest.raises(InvalidInstagramUrl, match="Story"):
+        validate_instagram_url("https://www.instagram.com/stories/someone/123456/")
+
+
+def test_login_required_error_is_user_friendly() -> None:
+    # Stories are rejected before reaching the downloader (see validation.py),
+    # so this now covers the remaining login-wall case: private posts.
     error = InstagramDownloader._map_download_error(
-        DownloadError("[instagram:story] You need to log in to access this content")
+        DownloadError("[instagram] You need to log in to access this content")
     )
-    assert "login cookie" in str(error)
+    assert "login" in str(error).lower()

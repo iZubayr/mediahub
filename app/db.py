@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS mediahub_force_sub_channels (
     added_by BIGINT NOT NULL,
     added_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS mediahub_texts (
+    text_key TEXT PRIMARY KEY,
+    text_value TEXT NOT NULL,
+    updated_by BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -81,6 +88,13 @@ async def create_pool(settings: Settings) -> asyncpg.Pool:
         min_size=1,
         max_size=max(settings.worker_concurrency + 2, 5),
         command_timeout=30,
+        # Recycle connections that have sat idle for a while. Supabase's
+        # pooler (and network paths in general) can silently drop
+        # long-idle connections; without this, asyncpg only discovers a
+        # dead connection when a query on it fails, which is exactly the
+        # kind of "worked, then went quiet for hours, then errors on the
+        # next request" symptom this guards against.
+        max_inactive_connection_lifetime=300,
         # Supabase's pooler (pgbouncer) does not support prepared statements
         # in transaction/session pool mode; each pooled connection may be
         # handed to a different backend session between queries, so a

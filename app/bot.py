@@ -6,7 +6,14 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatType, ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+    CallbackQuery,
+    Message,
+    MenuButtonCommands,
+)
 
 from .admin import create_admin_router
 from .config import Settings
@@ -17,11 +24,47 @@ from .limits import RateLimiter
 from .logging_config import configure_logging
 from .models import DownloadJob
 from .queue import DownloadQueue
+from .texts import get_text
 from .users import upsert_user
 from .validation import extract_url, validate_instagram_url
 
 
 logger = logging.getLogger(__name__)
+
+
+USER_COMMANDS = [
+    BotCommand(command="start", description="Botni boshlash"),
+    BotCommand(command="help", description="Yordam"),
+]
+
+ADMIN_EXTRA_COMMANDS = [
+    BotCommand(command="admin", description="🛠 Admin panel"),
+]
+
+
+async def setup_menu_button(bot: Bot, settings: Settings) -> None:
+    """Configures the ☰ menu button next to the message input. For everyone,
+    it shows the default command list (/start, /help). For each admin ID
+    individually, it additionally lists /admin — so tapping ☰ then "Admin
+    panel" opens the same inline-button panel /admin does, without typing
+    anything, and without exposing that option to non-admin users (Telegram
+    command scopes are per-chat, so a chat-specific command list is only
+    ever visible to that one user).
+    """
+    await bot.set_my_commands(commands=USER_COMMANDS, scope=BotCommandScopeDefault())
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+
+    for admin_id in settings.admin_id_set:
+        try:
+            await bot.set_my_commands(
+                commands=USER_COMMANDS + ADMIN_EXTRA_COMMANDS,
+                scope=BotCommandScopeChat(chat_id=admin_id),
+            )
+        except Exception:
+            # Most common cause: this admin has never started a chat with
+            # the bot yet, so Telegram has no chat to scope commands to.
+            # Not fatal — falls back to the default list until they do.
+            logger.warning("menu_button_setup_failed_for_admin admin_id=%s", admin_id, exc_info=True)
 
 
 def create_dispatcher(settings: Settings, pool: asyncpg.Pool) -> Dispatcher:
@@ -51,27 +94,24 @@ def create_dispatcher(settings: Settings, pool: asyncpg.Pool) -> Dispatcher:
         # confirmed membership for this callback (it would have blocked the
         # request otherwise), so we just confirm to the user.
         if callback.message is not None:
-            await callback.message.answer("✅ Obuna tasdiqlandi. Endi botdan foydalanishingiz mumkin.")
+            text = await get_text(pool, "force_sub_confirmed")
+            await callback.message.answer(text)
         await callback.answer()
 
     @router.message(CommandStart())
     async def start_handler(message: Message) -> None:
-        await message.answer(
-            "Salom! Instagram’dan Reel, video, rasm va carousel yuklash uchun "
-            "havolani yuboring.\n\n"
-            "Private akkauntlar va login talab qiladigan kontent qo‘llab-quvvatlanmaydi.\n"
-            "Yordam: /help"
-        )
+        text = await get_text(pool, "start")
+        await message.answer(text)
 
     @router.message(Command("help"))
     async def help_handler(message: Message) -> None:
-        await message.answer(
-            "Instagram media havolasini yuboring. Bot public Reel, video, rasm va "
-            "carousel’larni qaytaradi.\n\n"
-            f"Bir daqiqalik limit: {settings.requests_per_minute} ta so‘rov.\n"
-            f"Kunlik limit: {settings.daily_download_limit} ta yuklash.\n\n"
-            "Private, o‘chirilgan yoki mavjud bo‘lmagan kontent yuklanmaydi."
+        text = await get_text(
+            pool,
+            "help",
+            requests_per_minute=settings.requests_per_minute,
+            daily_download_limit=settings.daily_download_limit,
         )
+        await message.answer(text)
 
     @router.message(F.text)
     async def link_handler(message: Message) -> None:
@@ -81,30 +121,30 @@ def create_dispatcher(settings: Settings, pool: asyncpg.Pool) -> Dispatcher:
         user_id = message.from_user.id
         source_url = extract_url(message.text)
         if source_url is None:
-            await message.answer("Instagram havolasini yuboring.")
+            await message.answer(await get_text(pool, "invalid_link"))
             return
 
         try:
             source_url = validate_instagram_url(source_url)
-        except Exception:
+        except Exception as validation_error:
             await message.answer(
-                "Havola noto‘g‘ri. Instagram’dagi post, Reel yoki story havolasini yuboring."
+                str(validation_error) or await get_text(pool, "invalid_instagram_url")
             )
             return
 
         try:
             if not await limiter.allow_request(user_id):
-                await message.answer("So‘rovlar juda tez yuborildi. Bir daqiqadan keyin urinib ko‘ring.")
+                await message.answer(await get_text(pool, "rate_limited"))
                 return
             if not await limiter.allow_daily_download(user_id):
-                await message.answer("Bugungi yuklash limitiga yetdingiz.")
+                await message.answer(await get_text(pool, "daily_limit_reached"))
                 return
         except asyncpg.PostgresError:
             logger.exception("rate_limit_db_error user_id=%s", user_id)
-            await message.answer("Server vaqtincha band. Birozdan keyin qayta urinib ko‘ring.")
+            await message.answer(await get_text(pool, "server_busy"))
             return
 
-        status_message = await message.answer("⏳ So‘rov qabul qilindi, navbatga qo‘shilmoqda...")
+        status_message = await message.answer(await get_text(pool, "queued"))
         job = DownloadJob.create(
             user_id=user_id,
             chat_id=message.chat.id,
@@ -115,24 +155,20 @@ def create_dispatcher(settings: Settings, pool: asyncpg.Pool) -> Dispatcher:
         try:
             has_slot = await limiter.acquire_job_slot(user_id, job.job_id)
             if not has_slot:
-                await status_message.edit_text(
-                    "Sizda faol yuklashlar soni ko‘p. Avvalgi vazifa tugashini kuting."
-                )
+                await status_message.edit_text(await get_text(pool, "too_many_active"))
                 return
             await queue.enqueue(job)
         except QueueFull:
             await limiter.release_job_slot(user_id, job.job_id)
-            await status_message.edit_text(
-                "Serverdagi navbat hozir to‘la. Birozdan keyin qayta urinib ko‘ring."
-            )
+            await status_message.edit_text(await get_text(pool, "queue_full"))
         except asyncpg.PostgresError:
             await limiter.release_job_slot(user_id, job.job_id)
             logger.exception("enqueue_db_error job_id=%s", job.job_id)
-            await status_message.edit_text("Server vaqtincha band. Keyinroq qayta urinib ko‘ring.")
+            await status_message.edit_text(await get_text(pool, "server_busy_enqueue"))
         except Exception:
             await limiter.release_job_slot(user_id, job.job_id)
             logger.exception("enqueue_error job_id=%s", job.job_id)
-            await status_message.edit_text("So‘rovni qabul qilishda xatolik yuz berdi.")
+            await status_message.edit_text(await get_text(pool, "unexpected_error"))
 
     dispatcher.include_router(router)
     return dispatcher
@@ -150,6 +186,7 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dispatcher = create_dispatcher(settings, pool)
+    await setup_menu_button(bot, settings)
     try:
         await dispatcher.start_polling(bot)
     finally:

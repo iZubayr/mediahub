@@ -25,7 +25,13 @@ def validate_instagram_url(value: str) -> str:
     if not parsed.path or parsed.path == "/":
         raise InvalidInstagramUrl("Media post yoki Reel havolasini yuboring.")
 
-    supported_prefixes = ("/p/", "/reel/", "/reels/", "/tv/", "/stories/")
+    if parsed.path.startswith("/stories/"):
+        raise InvalidInstagramUrl(
+            "Story’lar qo‘llab-quvvatlanmaydi — ular Instagram login talab qiladi. "
+            "Post yoki Reel havolasini yuboring."
+        )
+
+    supported_prefixes = ("/p/", "/reel/", "/reels/", "/tv/")
     if not parsed.path.startswith(supported_prefixes):
         raise InvalidInstagramUrl("Bu Instagram havolasi media postga o‘xshamaydi.")
 
