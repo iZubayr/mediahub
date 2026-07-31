@@ -17,5 +17,5 @@ jobs:
 <<<<<<< HEAD
           script: bash /mediahub/deploy.sh
 =======
-          script: bash /home/zubayr/mediahub/deploy.sh
+          script: bash /mediahub/deploy.sh
 >>>>>>> 83d739db525d44630d14753c9918205c67984bd3

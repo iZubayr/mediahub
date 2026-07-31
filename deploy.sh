@@ -4,7 +4,7 @@ set -euo pipefail
 # Run on the AlwaysData server by GitHub Actions over SSH after every push
 # to main. Safe to run by hand too: `bash deploy.sh`
 
-cd /home/zubayr/mediahub
+cd mediahub
 
 echo "== Pulling latest code =="
 git fetch origin main
