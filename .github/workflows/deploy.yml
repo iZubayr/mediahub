@@ -14,8 +14,4 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-<<<<<<< HEAD
           script: bash /mediahub/deploy.sh
-=======
-          script: bash /mediahub/deploy.sh
->>>>>>> 83d739db525d44630d14753c9918205c67984bd3
