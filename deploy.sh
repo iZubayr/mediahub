@@ -10,6 +10,14 @@ echo "== Pulling latest code =="
 git fetch origin main
 git reset --hard origin/main
 
+# --- SHU YERGA YANGI TEKSHIRUV QO'SHILDI ---
+echo "== Checking virtual environment =="
+if [ ! -d ".venv" ]; then
+    echo "== .venv not found. Creating a new virtual environment... =="
+    python3 -m venv .venv
+fi
+# ------------------------------------------
+
 echo "== Installing dependencies =="
 .venv/bin/python -m pip install -q -r requirements.txt
 
