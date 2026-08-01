@@ -117,7 +117,42 @@ Agar Supabase bazasida ulanish limitiga tegib qolsangiz (Free tarifda odatda
 ~60 ulanish), buni pasaytiring yoki pooler manzilini albatta ishlatganingizga
 ishonch hosil qiling.
 
-## 5. Webhook — Site sifatida
+## 5. Botni ishga tushirish — ikkita variant
+
+### Variant A: Bitta Service (tavsiya etiladi)
+
+Bu — eng barqaror variant. Webhook uchun alohida Site kerak emas, faqat
+**bitta** Service — bot ham xabar qabul qiladi (polling orqali), ham
+media yuklaydi, bittasi ichida.
+
+Dashboard > **Advanced > Services > Add a service**:
+
+- Name: `mediahub`
+- Command:
+  ```
+  /home/zubayr/mediahub/.venv/bin/python -m app.standalone
+  ```
+- Working directory: `/home/zubayr/mediahub`
+
+Bu bilan Site umuman kerak emas — agar avval Site sozlagan bo'lsangiz,
+uni o'chirib qo'yishingiz mumkin (Dashboard > Web > Sites > o'chirish).
+
+**Nega bu tavsiya etiladi:** AlwaysData'da Site (HTTP orqali ishlaydigan,
+webhook uchun kerak bo'lgan process) ba'zan kutilmagan tarzda to'xtab
+qolishi yoki qayta ishga tushmasdan qolib ketishi kuzatilgan — bu holda
+webhook orqali kelgan Telegram xabarlari umuman qabul qilinmay qoladi, va
+buni faqat qo'lda tekshirib bilib olish mumkin. Service turi esa
+AlwaysData tomonidan avtomatik qayta ishga tushiriladi, va polling
+rejimida bot Telegram serveriga o'zi ulanib turadi — HTTP orqali tashqi
+so'rov qabul qilish shart emas.
+
+**Farqi:** polling'da xabarlar bir necha soniya kechikish bilan kelishi
+mumkin (webhook'dagi kabi zudlik bilan emas), lekin oddiy foydalanish
+uchun bu sezilarli emas.
+
+### Variant B: Webhook (Site + Service alohida)
+
+Agar baribir webhook rejimini xohlasangiz:
 
 Dashboard > **Web > Sites > Add a site**:
 
@@ -131,8 +166,6 @@ Dashboard > **Web > Sites > Add a site**:
 
 `$IP` va `$PORT`ni AlwaysData avtomatik beradi, o'zgartirmang.
 
-## 6. Worker — Service sifatida
-
 Dashboard > **Advanced > Services > Add a service**:
 
 - Name: `mediahub-worker`
@@ -142,9 +175,7 @@ Dashboard > **Advanced > Services > Add a service**:
   ```
 - Working directory: `/home/zubayr/mediahub`
 
-Worker to'xtab qolsa, AlwaysData uni avtomatik qayta ishga tushiradi.
-
-## 7. Tekshirish
+## 6. Tekshirish
 
 SSH orqali baza ulanishini tekshiring:
 
@@ -169,13 +200,16 @@ asyncio.run(check())
 `1` chiqsa — ulanish ishlayapti.
 
 Keyin:
-- `https://zubayr.alwaysdata.net/health` — javobda `"database": "ok"` va
-  `"mode": "webhook"` chiqishi kerak.
-- Dashboard > **Advanced > Processes > Services** bo'limidan
-  `mediahub-worker` holatini kuzating.
-- Telegram'da botga `/start`, so'ng public Instagram Reel havolasini yuboring.
+- **Variant A (standalone)** — Dashboard > **Advanced > Processes >
+  Services** bo'limidan `mediahub` holatini kuzating (loglarida
+  `database_pool_ready` va aiogram polling xabarlari ko'rinishi kerak).
+- **Variant B (webhook)** — `https://zubayr.alwaysdata.net/health`
+  javobida `"database": "ok"` va `"mode": "webhook"` chiqishi kerak;
+  `mediahub-worker` Service holatini alohida kuzating.
+- Ikkalasida ham: Telegram'da botga `/start`, so'ng public Instagram Reel
+  havolasini yuboring.
 
-## 8. 100 kishilik yuklama haqida eslatma
+## 7. 100 kishilik yuklama haqida eslatma
 
 - Navbat va limitlar endi Redis emas, Supabase orqali ishlaydi — bu biroz
   sekinroq (har so'rov tarmoq orqali Supabase'ga boradi), lekin AlwaysData
@@ -188,7 +222,7 @@ Keyin:
   yoki qayta ishga tushsa, "processing" holatida qolib ketgan joblar shu
   vaqtdan keyin avtomatik qayta navbatga qo'shiladi.
 
-## 9. Ehtimoliy xatolar
+## 8. Ehtimoliy xatolar
 
 - `RuntimeError: DATABASE_URL is not configured` — `.env` fayli topilmayapti
   yoki bo'sh; working directory to'g'riligini tekshiring.

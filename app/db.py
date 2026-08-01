@@ -1,4 +1,7 @@
+import asyncio
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 import asyncpg
 
@@ -108,3 +111,49 @@ async def create_pool(settings: Settings) -> asyncpg.Pool:
         await conn.execute(SCHEMA)
     logger.info("database_pool_ready")
     return pool
+
+
+# Errors that mean "this specific connection is dead/stale", as opposed to
+# a real query problem (bad SQL, constraint violation, etc). Retrying with a
+# fresh connection from the pool is safe and usually succeeds immediately,
+# since it's the pooler dropping an idle connection, not the database itself
+# being down.
+_TRANSIENT_CONNECTION_ERRORS = (
+    asyncpg.ConnectionDoesNotExistError,
+    asyncpg.InterfaceError,
+    asyncpg.TooManyConnectionsError,
+    ConnectionResetError,
+    OSError,
+)
+
+
+@asynccontextmanager
+async def acquire_with_retry(
+    pool: asyncpg.Pool, attempts: int = 2, backoff_seconds: float = 0.5
+) -> AsyncIterator[asyncpg.pool.PoolConnectionProxy]:
+    """Like `pool.acquire()`, but transparently retries once if the pooled
+    connection turns out to be stale (Supabase's Session pooler can drop an
+    idle connection without asyncpg noticing until the next query runs on
+    it). Use this in places doing a single, retry-safe read; for multi-step
+    transactions, catching _TRANSIENT_CONNECTION_ERRORS around the whole
+    `async with pool.acquire()` block at the call site is more appropriate,
+    since a transaction can't be transparently resumed mid-way.
+    """
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            async with pool.acquire() as conn:
+                yield conn
+                return
+        except _TRANSIENT_CONNECTION_ERRORS as exc:
+            last_error = exc
+            logger.warning(
+                "db_connection_retry attempt=%s/%s error=%s",
+                attempt + 1,
+                attempts,
+                type(exc).__name__,
+            )
+            if attempt < attempts - 1:
+                await asyncio.sleep(backoff_seconds)
+    assert last_error is not None
+    raise last_error

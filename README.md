@@ -5,7 +5,11 @@ MediaHub — Telegram bot orqali public Instagram Reel, video, rasm va carousel 
 ## Hozirgi imkoniyatlar
 
 - Instagram URL validatsiyasi;
-- public Reel, video, rasm va carousel uchun downloader adapteri;
+- public Reel, video, rasm va carousel uchun downloader adapteri —
+  video/rasm uchun `yt-dlp`, carousel (bir nechta rasm/video) uchun
+  `instaloader` orqali Instagram’ning GraphQL sidecar ma’lumotidan barcha
+  elementlarni olish, va oxirgi chora sifatida bitta-rasmli Open Graph
+  scrape;
 - stream-first Telegram upload (`URLInputFile`);
 - stream ishlamasa, chunked temporary-file fallback;
 - Postgres (Supabase) asosidagi queue va cheklangan worker pool — Redis kerak emas;
@@ -13,12 +17,19 @@ MediaHub — Telegram bot orqali public Instagram Reel, video, rasm va carousel 
 - foydalanuvchi uchun faol job limiti va kunlik limit;
 - retry/fallback, timeout, cleanup va xatolik xabarlari;
 - majburiy obuna (force-subscribe) — kanal(lar)ga qo‘shilmagan foydalanuvchi botdan foydalana olmaydi;
-- **inline tugmali admin panel** (`/admin`) — statistika, broadcast, kanal
-  boshqaruvi va foydalanuvchi matnlarini tahrirlash, bittasi xabar bo‘lib
-  ketmasdan, bitta xabar ichida navigatsiya qilinadi;
+- **inline tugmali admin panel** (`/admin`, yoki ☰ menyu tugmasidan bir
+  bosishda) — statistika, broadcast, kanal boshqaruvi va foydalanuvchi
+  matnlarini tahrirlash, bittasi xabar bo‘lib ketmasdan, bitta xabar
+  ichida navigatsiya qilinadi;
 - foydalanuvchiga chiqadigan barcha matnlar (salomlashuv, yordam, xato
   xabarlari va h.k.) admin panel orqali kodga tegmasdan tahrirlanadi;
-- `/health` endpoint;
+- **bitta process ichida polling + worker** (`app/standalone.py`) —
+  alohida webhook Site’siz, faqat bitta Service’da to‘liq ishlaydi;
+- worker xato bo‘lsa to‘xtamaydi — har bir tsikl va har bir worker
+  supervisor bilan o‘ralgan, muammo faqat log’ga yoziladi;
+- baza ulanishi Supabase pooler tomonidan uzilib qolsa, avtomatik bir marta
+  qayta uriniladigan `acquire_with_retry` yordamchisi;
+- `/health` endpoint (webhook rejimida);
 - Telegram webhook va webhook-secret validation.
 
 Private kontent va story qasddan qo‘llab-quvvatlanmaydi — bular Instagram
@@ -75,19 +86,38 @@ Health-check:
 http://localhost:8080/health
 ```
 
-## Lokal polling rejimi
+## Ishga tushirish rejimlari
 
-Python 3.12 va Redis kerak bo‘ladi.
+Python 3.12 va Postgres (Supabase yoki lokal) kerak bo‘ladi. Redis
+umuman ishlatilmaydi.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
+
+### Standalone (tavsiya etiladi — bitta process, polling + worker)
+
+```powershell
+python -m app.standalone
+```
+
+Bitta process ichida bot ham xabar qabul qiladi (polling), ham
+navbatdagi yuklash vazifalarini bajaradi. Alohida webhook server yoki
+Site kerak emas — production’da ham shu rejim tavsiya etiladi (qarang:
+`DEPLOY_ALWAYSDATA.md`).
+
+### Ajratilgan polling + worker
+
+```powershell
 python -m app.bot
 python -m app.worker
 ```
 
-`.env` lokal rejimda `REDIS_URL=redis://localhost:6379/0` bo‘lishi kerak.
+Ikkita alohida process — bot faqat xabar qabul qilib navbatga qo‘yadi,
+worker alohida navbatni ishlaydi. Ko‘p yuklamali sozlashlarda foydali,
+lekin ikkita process’ni alohida kuzatish kerak.
 
 ## Webhook rejimi
 

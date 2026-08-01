@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from .bot import create_dispatcher, setup_menu_button
 from .config import Settings
-from .db import create_pool
+from .db import acquire_with_retry, create_pool
 from .logging_config import configure_logging
 
 
@@ -54,7 +54,7 @@ app = FastAPI(title="MediaHub Webhook", version="0.3.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    async with app.state.pool.acquire() as conn:
+    async with acquire_with_retry(app.state.pool) as conn:
         await conn.fetchval("SELECT 1")
     return {"status": "ok", "database": "ok", "mode": "webhook"}
 

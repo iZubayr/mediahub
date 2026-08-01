@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 
 import aiofiles
 import httpx
+import instaloader
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
@@ -104,12 +105,23 @@ class InstagramDownloader:
                 message = str(exc).lower()
                 # yt-dlp's Instagram extractor raises this specific message
                 # for image-only posts (it only looks for a video stream).
-                # The og: meta tag scrape is a single-image fallback for
-                # exactly that case. It is NOT a general-purpose fallback:
-                # login walls, rate limits, and deleted posts should surface
-                # as their real error rather than silently trying a scrape
-                # that would just fail again with a confusing message.
+                # Two fallbacks exist for exactly that case, tried in order:
+                #  1. instaloader, which reads Instagram's GraphQL sidecar
+                #     data directly and can recover EVERY image/video in a
+                #     carousel post, not just one.
+                #  2. the og: meta tag scrape, which can only ever recover a
+                #     single image (Instagram's server-rendered HTML exposes
+                #     one og:image tag even for carousels), used only if
+                #     instaloader itself fails (e.g. Instagram rate-limits
+                #     the unauthenticated GraphQL query).
+                # Login walls, rate limits, and deleted posts should still
+                # surface as their real error rather than silently retrying
+                # with something that would just fail again confusingly.
                 if "there is no video in this post" in message:
+                    try:
+                        return self._extract_via_instaloader(source_url), False
+                    except UnsupportedMedia:
+                        pass
                     try:
                         return self._extract_open_graph(source_url), True
                     except UnsupportedMedia:
@@ -118,6 +130,70 @@ class InstagramDownloader:
         if not isinstance(info, dict):
             raise MediaNotFound("Media ma’lumotlari topilmadi.")
         return info, False
+
+    def _extract_via_instaloader(self, source_url: str) -> dict[str, Any]:
+        """Recovers ALL images/videos of a carousel (sidecar) post by
+        reading Instagram's GraphQL post data directly, the same data the
+        official web client uses to render the swipeable carousel. Works
+        without login for public posts. This is what makes multi-image
+        carousels work at all — yt-dlp only looks for a video stream, and
+        the plain-HTML og:image fallback can only ever see the first slide.
+        """
+        shortcode = self._extract_shortcode(source_url)
+        if shortcode is None:
+            raise UnsupportedMedia("Post havolasidan shortcode aniqlanmadi.")
+
+        loader = instaloader.Instaloader(
+            quiet=True,
+            download_pictures=False,
+            download_videos=False,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+            compress_json=False,
+            max_connection_attempts=1,
+        )
+        try:
+            post = instaloader.Post.from_shortcode(loader.context, shortcode)
+        except Exception as exc:
+            # instaloader raises several different exception types for
+            # "not found", "login required", "rate limited" etc. — all of
+            # them just mean "this path didn't work", so the caller falls
+            # through to the next fallback rather than needing to know
+            # instaloader's specific exception hierarchy.
+            raise UnsupportedMedia("instaloader orqali post o‘qib bo‘lmadi.") from exc
+
+        entries: list[dict[str, Any]] = []
+        if post.typename == "GraphSidecar":
+            for index, node in enumerate(post.get_sidecar_nodes(), start=1):
+                media_url = node.video_url if node.is_video else node.display_url
+                if not media_url:
+                    continue
+                entries.append(self._instaloader_entry(media_url, node.is_video, index))
+        else:
+            media_url = post.video_url if post.is_video else post.url
+            if media_url:
+                entries.append(self._instaloader_entry(media_url, post.is_video, 1))
+
+        if not entries:
+            raise UnsupportedMedia("instaloader orqali media topilmadi.")
+        return entries[0] if len(entries) == 1 else {"entries": entries}
+
+    def _instaloader_entry(self, media_url: str, is_video: bool, index: int) -> dict[str, Any]:
+        return {
+            "id": f"instaloader_{index}",
+            "title": f"instagram_post_{index}",
+            "url": media_url,
+            "ext": "mp4" if is_video else "jpg",
+            "vcodec": "h264" if is_video else "none",
+            "http_headers": {"User-Agent": self._user_agent()},
+        }
+
+    @staticmethod
+    def _extract_shortcode(source_url: str) -> str | None:
+        match = re.search(r"/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)", source_url)
+        return match.group(1) if match else None
 
     def _extract_open_graph(self, source_url: str) -> dict[str, Any]:
         """Best-effort fallback for single-image posts that yt-dlp's video
