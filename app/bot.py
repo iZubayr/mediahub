@@ -18,6 +18,7 @@ from aiogram.types import (
 from .admin import create_admin_router
 from .config import Settings
 from .db import create_pool
+from .downloader import InstagramDownloader
 from .errors import QueueFull
 from .force_sub import ForceSubscribeMiddleware
 from .limits import RateLimiter
@@ -27,6 +28,7 @@ from .queue import DownloadQueue
 from .texts import get_text
 from .users import upsert_user
 from .validation import extract_url, validate_instagram_url
+from .worker_state import WorkerActivityTracker
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,25 @@ async def setup_menu_button(bot: Bot, settings: Settings) -> None:
             logger.warning("menu_button_setup_failed_for_admin admin_id=%s", admin_id, exc_info=True)
 
 
-def create_dispatcher(settings: Settings, pool: asyncpg.Pool) -> Dispatcher:
+def create_dispatcher(
+    settings: Settings,
+    pool: asyncpg.Pool,
+    activity_tracker: WorkerActivityTracker | None = None,
+    downloader: InstagramDownloader | None = None,
+) -> Dispatcher:
+    """`activity_tracker` and `downloader` are only passed in standalone
+    mode (see app/standalone.py), where the bot and workers share one
+    process and one event loop. When present, an incoming link is executed
+    immediately in-process instead of going through the Postgres queue, but
+    ONLY if no worker is currently busy — this avoids the enqueue -> poll
+    -> claim round-trip's latency when there's no actual contention to
+    manage, while still falling back to the normal queue under load so
+    concurrent requests don't overwhelm the process.
+
+    In webhook mode (both args None), everything always goes through the
+    queue as before, since the webhook process and worker Service have no
+    shared in-memory state to check.
+    """
     dispatcher = Dispatcher()
     dispatcher.message.middleware(ForceSubscribeMiddleware(settings, pool))
     dispatcher.callback_query.middleware(ForceSubscribeMiddleware(settings, pool))
@@ -114,7 +134,7 @@ def create_dispatcher(settings: Settings, pool: asyncpg.Pool) -> Dispatcher:
         await message.answer(text)
 
     @router.message(F.text)
-    async def link_handler(message: Message) -> None:
+    async def link_handler(message: Message, bot: Bot) -> None:
         if message.from_user is None or message.text is None:
             return
 
@@ -157,6 +177,23 @@ def create_dispatcher(settings: Settings, pool: asyncpg.Pool) -> Dispatcher:
             if not has_slot:
                 await status_message.edit_text(await get_text(pool, "too_many_active"))
                 return
+
+            if activity_tracker is not None and downloader is not None and activity_tracker.is_idle:
+                # Fast path: nothing else is running right now, so skip the
+                # queue entirely and start processing immediately.
+                from .worker import process_job  # local import: avoids a
+
+                # bot.py <-> worker.py circular import at module load time
+                async def _run_direct() -> None:
+                    await activity_tracker.enter()
+                    try:
+                        await process_job(bot, pool, queue, limiter, downloader, settings, job)
+                    finally:
+                        await activity_tracker.exit()
+
+                asyncio.ensure_future(_run_direct())
+                return
+
             await queue.enqueue(job)
         except QueueFull:
             await limiter.release_job_slot(user_id, job.job_id)

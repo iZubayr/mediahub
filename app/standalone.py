@@ -11,6 +11,7 @@ from .limits import RateLimiter
 from .logging_config import configure_logging
 from .queue import DownloadQueue
 from .worker import _supervised_worker, stuck_job_recovery_loop
+from .worker_state import WorkerActivityTracker
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,15 @@ async def main() -> None:
     downloads, so a very large burst of incoming messages could compete
     for CPU/event-loop time with active downloads. For a single bot with
     moderate traffic this is a reasonable trade for operational simplicity.
+
+    Standalone mode also enables a queue-skipping fast path: when no
+    worker is currently busy, an incoming request is processed immediately
+    instead of going through the enqueue -> poll -> claim round-trip
+    through Postgres, saving a bit of latency when there's no real
+    contention to manage. See WorkerActivityTracker and bot.py's
+    link_handler for details. This optimization only exists here — webhook
+    mode always uses the queue, since the webhook process and worker
+    Service can't see each other's in-memory state.
     """
     configure_logging()
     settings = Settings()
@@ -41,14 +51,17 @@ async def main() -> None:
     await queue.recover_stuck()
     limiter = RateLimiter(pool, settings)
     downloader = InstagramDownloader(settings)
+    activity_tracker = WorkerActivityTracker()
 
     bot = Bot(token=settings.telegram_bot_token)
-    dispatcher = create_dispatcher(settings, pool)
+    dispatcher = create_dispatcher(settings, pool, activity_tracker, downloader)
     await setup_menu_button(bot, settings)
 
     worker_tasks = [
         asyncio.create_task(
-            _supervised_worker(bot, pool, queue, limiter, downloader, settings, index)
+            _supervised_worker(
+                bot, pool, queue, limiter, downloader, settings, index, activity_tracker
+            )
         )
         for index in range(settings.worker_concurrency)
     ]

@@ -16,6 +16,7 @@ from .logging_config import configure_logging
 from .models import DownloadJob
 from .queue import DownloadQueue
 from .texts import get_text
+from .worker_state import WorkerActivityTracker
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,17 @@ async def update_status(bot: Bot, job: DownloadJob, text: str) -> None:
         )
     except TelegramAPIError:
         logger.warning("status_update_failed job_id=%s", job.job_id, exc_info=True)
+
+
+def notify_status(bot: Bot, job: DownloadJob, text: str) -> None:
+    """Fire-and-forget status update: schedules the Telegram edit as a
+    background task instead of awaiting it inline. Status text is purely
+    informational (what the user sees while waiting), so there's no reason
+    to block the actual download/upload work — which is on the real
+    critical path — on a Telegram API round-trip just to update a progress
+    message. Errors are still logged by update_status itself.
+    """
+    asyncio.ensure_future(update_status(bot, job, text))
 
 
 async def send_item(
@@ -117,13 +129,13 @@ async def process_job(
     job: DownloadJob,
 ) -> None:
     try:
-        await update_status(bot, job, await get_text(pool, "checking"))
+        notify_status(bot, job, await get_text(pool, "checking"))
         result = await downloader.resolve(job.source_url)
         items = result.items
         total = len(items)
 
         for index, item in enumerate(items, start=1):
-            await update_status(
+            notify_status(
                 bot, job, await get_text(pool, "uploading", index=index, total=total)
             )
             await send_item(bot, pool, downloader, settings, job, item, index, total)
@@ -150,6 +162,7 @@ async def worker_loop(
     limiter: RateLimiter,
     downloader: InstagramDownloader,
     settings: Settings,
+    activity_tracker: WorkerActivityTracker | None = None,
 ) -> None:
     while True:
         try:
@@ -167,6 +180,8 @@ async def worker_loop(
             await asyncio.sleep(settings.poll_interval_seconds)
             continue
 
+        if activity_tracker is not None:
+            await activity_tracker.enter()
         try:
             await process_job(bot, pool, queue, limiter, downloader, settings, job)
         except Exception:
@@ -174,6 +189,9 @@ async def worker_loop(
             # user; this is a final safety net for anything that slipped
             # through, so a single bad job can't kill the whole worker.
             logger.exception("process_job_crashed job_id=%s", job.job_id)
+        finally:
+            if activity_tracker is not None:
+                await activity_tracker.exit()
 
 
 async def stuck_job_recovery_loop(queue: DownloadQueue, settings: Settings) -> None:
@@ -196,6 +214,7 @@ async def _supervised_worker(
     downloader: InstagramDownloader,
     settings: Settings,
     worker_index: int,
+    activity_tracker: WorkerActivityTracker | None = None,
 ) -> None:
     """Wraps worker_loop so that if it ever exits unexpectedly (it shouldn't,
     since worker_loop already catches everything internally, but this is a
@@ -203,7 +222,7 @@ async def _supervised_worker(
     reducing worker capacity until the whole process is restarted by hand."""
     while True:
         try:
-            await worker_loop(bot, pool, queue, limiter, downloader, settings)
+            await worker_loop(bot, pool, queue, limiter, downloader, settings, activity_tracker)
         except asyncio.CancelledError:
             raise
         except Exception:

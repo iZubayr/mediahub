@@ -36,6 +36,16 @@ META_CONTENT_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# yt-dlp signals "this post has no video stream" (i.e. it's an image or
+# carousel post) with different message wording depending on version and
+# code path. Both are observed in production logs. Any message matching one
+# of these triggers the instaloader/Open Graph fallback chain instead of
+# surfacing a raw yt-dlp error.
+NO_VIDEO_ERROR_MARKERS = (
+    "there is no video in this post",
+    "no video formats found",
+)
+
 
 @dataclass(slots=True)
 class MediaItem:
@@ -91,6 +101,21 @@ class InstagramDownloader:
             "noplaylist": False,
             "format": "best[ext=mp4]/best",
             "http_headers": {"User-Agent": self._user_agent()},
+            # Skip fetching comments — we never display them, and it's an
+            # extra Instagram API round-trip per post that only adds
+            # latency without benefit.
+            "getcomments": False,
+            # Carousel posts are extracted by yt-dlp as a playlist where
+            # each slide is a separate entry (see yt-dlp's
+            # InstagramIE._extract_product), and yt-dlp's Instagram
+            # extractor already returns full sidecar image/video data for
+            # every slide. Without ignoreerrors, ONE image-only slide in an
+            # otherwise-fine carousel raises "No video formats found!" for
+            # the whole post and aborts extraction entirely — even though
+            # the other slides (and that slide's own thumbnail) are fine.
+            # "only_download" limits the leniency to the download stage
+            # (metadata extraction errors still raise normally).
+            "ignoreerrors": "only_download",
         }
         # Deliberately no cookie/login support: authenticating as a real
         # Instagram account to scrape on behalf of arbitrary bot users risks
@@ -103,32 +128,63 @@ class InstagramDownloader:
                 info = ydl.extract_info(source_url, download=False)
             except DownloadError as exc:
                 message = str(exc).lower()
-                # yt-dlp's Instagram extractor raises this specific message
-                # for image-only posts (it only looks for a video stream).
-                # Two fallbacks exist for exactly that case, tried in order:
-                #  1. instaloader, which reads Instagram's GraphQL sidecar
-                #     data directly and can recover EVERY image/video in a
-                #     carousel post, not just one.
-                #  2. the og: meta tag scrape, which can only ever recover a
-                #     single image (Instagram's server-rendered HTML exposes
-                #     one og:image tag even for carousels), used only if
-                #     instaloader itself fails (e.g. Instagram rate-limits
-                #     the unauthenticated GraphQL query).
-                # Login walls, rate limits, and deleted posts should still
-                # surface as their real error rather than silently retrying
-                # with something that would just fail again confusingly.
-                if "there is no video in this post" in message:
+                # This path now only triggers for a single-image post (no
+                # playlist/carousel at all — ignoreerrors doesn't apply
+                # since there's nothing to skip to). The instaloader/Open
+                # Graph fallbacks still cover that case. Login walls, rate
+                # limits, and deleted posts should still surface as their
+                # real error rather than silently retrying with something
+                # that would just fail again confusingly.
+                if any(marker in message for marker in NO_VIDEO_ERROR_MARKERS):
+                    logger.info("no_video_detected trying_instaloader url=%s", source_url)
                     try:
-                        return self._extract_via_instaloader(source_url), False
+                        result = self._extract_via_instaloader(source_url)
+                        entry_count = len(result.get("entries", [result]))
+                        logger.info(
+                            "instaloader_succeeded url=%s entries=%s", source_url, entry_count
+                        )
+                        return result, False
                     except UnsupportedMedia:
                         pass
+                    logger.warning(
+                        "instaloader_failed_trying_open_graph url=%s "
+                        "(carousel posts will only recover 1 image via this path)",
+                        source_url,
+                    )
                     try:
                         return self._extract_open_graph(source_url), True
                     except UnsupportedMedia:
                         pass
+                    logger.error("all_fallbacks_exhausted url=%s", source_url)
                 raise
         if not isinstance(info, dict):
             raise MediaNotFound("Media ma’lumotlari topilmadi.")
+
+        # With ignoreerrors="only_download", a carousel slide that yt-dlp
+        # couldn't find a video format for comes back as an entry with no
+        # 'formats' but (for image slides) a populated 'thumbnails' list —
+        # recover those as images instead of dropping the slide entirely.
+        entries = info.get("entries")
+        if entries:
+            recovered = 0
+            for entry in entries:
+                if entry and not entry.get("formats") and not entry.get("url"):
+                    thumbnails = entry.get("thumbnails") or []
+                    if thumbnails:
+                        # yt-dlp orders thumbnails smallest-to-largest for
+                        # this extractor (see _extract_product_media's
+                        # `reversed(...)` call); the last one is highest-res.
+                        entry["url"] = thumbnails[-1]["url"]
+                        entry["ext"] = "jpg"
+                        entry["vcodec"] = "none"
+                        recovered += 1
+            if recovered:
+                logger.info(
+                    "carousel_images_recovered_from_thumbnails url=%s count=%s",
+                    source_url,
+                    recovered,
+                )
+
         return info, False
 
     def _extract_via_instaloader(self, source_url: str) -> dict[str, Any]:
@@ -161,7 +217,16 @@ class InstagramDownloader:
             # "not found", "login required", "rate limited" etc. — all of
             # them just mean "this path didn't work", so the caller falls
             # through to the next fallback rather than needing to know
-            # instaloader's specific exception hierarchy.
+            # instaloader's specific exception hierarchy. Logged at warning
+            # level (not silently swallowed) so a systematic failure — e.g.
+            # Instagram blocking this server's IP — is visible in production
+            # logs instead of just quietly degrading to single-image results.
+            logger.warning(
+                "instaloader_extraction_failed shortcode=%s error=%s: %s",
+                shortcode,
+                type(exc).__name__,
+                exc,
+            )
             raise UnsupportedMedia("instaloader orqali post o‘qib bo‘lmadi.") from exc
 
         entries: list[dict[str, Any]] = []
@@ -403,7 +468,7 @@ class InstagramDownloader:
             for word in ("not found", "does not exist", "unable to download webpage", "404")
         ):
             return MediaNotFound("Media topilmadi yoki o‘chirilgan.")
-        if "there is no video in this post" in message:
+        if any(marker in message for marker in NO_VIDEO_ERROR_MARKERS):
             return UnsupportedMedia(
                 "Bu postdagi media rasm yoki qo‘llab-quvvatlanmaydigan turda."
             )
