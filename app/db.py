@@ -80,6 +80,13 @@ CREATE TABLE IF NOT EXISTS mediahub_texts (
     updated_by BIGINT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS mediahub_runtime_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value INT NOT NULL,
+    updated_by BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 

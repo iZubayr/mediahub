@@ -5,6 +5,7 @@ from uuid import UUID
 import asyncpg
 
 from .config import Settings
+from .runtime_settings import get_int
 
 
 class RateLimiter:
@@ -14,6 +15,11 @@ class RateLimiter:
     plain row-count check instead of the Lua SISMEMBER/SADD script. Old
     minute/day buckets are cleaned up opportunistically on each call so the
     tables don't grow forever.
+
+    Limit VALUES are read via runtime_settings.get_int(), which returns an
+    admin-customized override if one was saved via the admin panel,
+    otherwise the .env default — so admins can tune limits live without a
+    redeploy.
     """
 
     def __init__(self, pool: asyncpg.Pool, settings: Settings) -> None:
@@ -21,6 +27,7 @@ class RateLimiter:
         self.settings = settings
 
     async def allow_request(self, user_id: int) -> bool:
+        limit = await get_int(self.pool, "requests_per_minute", self.settings)
         bucket = int(time.time() // 60)
         async with self.pool.acquire() as conn:
             value = await conn.fetchval(
@@ -39,9 +46,10 @@ class RateLimiter:
                 "DELETE FROM mediahub_rate_minute WHERE bucket < $1",
                 bucket - 5,
             )
-        return value <= self.settings.requests_per_minute
+        return value <= limit
 
     async def allow_daily_download(self, user_id: int) -> bool:
+        limit = await get_int(self.pool, "daily_download_limit", self.settings)
         day = datetime.now(timezone.utc).date()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -56,7 +64,7 @@ class RateLimiter:
                     user_id,
                     day,
                 )
-                if value <= self.settings.daily_download_limit:
+                if value <= limit:
                     return True
                 await conn.execute(
                     "UPDATE mediahub_rate_daily SET count = count - 1 "
@@ -67,6 +75,7 @@ class RateLimiter:
         return False
 
     async def acquire_job_slot(self, user_id: int, job_id: UUID) -> bool:
+        limit = await get_int(self.pool, "max_active_jobs_per_user", self.settings)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # Postgres disallows FOR UPDATE combined with an aggregate
@@ -76,7 +85,7 @@ class RateLimiter:
                     "SELECT 1 FROM mediahub_active_jobs WHERE user_id = $1 FOR UPDATE",
                     user_id,
                 )
-                if len(rows) >= self.settings.max_active_jobs_per_user:
+                if len(rows) >= limit:
                     return False
                 await conn.execute(
                     "INSERT INTO mediahub_active_jobs (user_id, job_id) VALUES ($1, $2) "

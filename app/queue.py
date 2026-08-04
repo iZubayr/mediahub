@@ -5,6 +5,7 @@ import asyncpg
 from .config import Settings
 from .errors import QueueFull
 from .models import DownloadJob
+from .runtime_settings import get_int
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class DownloadQueue:
         return int(value)
 
     async def enqueue(self, job: DownloadJob) -> None:
+        limit = await get_int(self.pool, "max_queue_size", self.settings)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # Postgres disallows FOR UPDATE combined with an aggregate
@@ -41,7 +43,7 @@ class DownloadQueue:
                     "SELECT 1 FROM mediahub_jobs WHERE status = 'queued' FOR UPDATE"
                 )
                 current_size = len(rows)
-                if current_size >= self.settings.max_queue_size:
+                if current_size >= limit:
                     raise QueueFull("Download queue is full")
                 await conn.execute(
                     """

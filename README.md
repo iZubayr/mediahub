@@ -6,10 +6,13 @@ MediaHub — Telegram bot orqali public Instagram Reel, video, rasm va carousel 
 
 - Instagram URL validatsiyasi;
 - public Reel, video, rasm va carousel uchun downloader adapteri —
-  video/rasm uchun `yt-dlp`, carousel (bir nechta rasm/video) uchun
-  `instaloader` orqali Instagram’ning GraphQL sidecar ma’lumotidan barcha
-  elementlarni olish, va oxirgi chora sifatida bitta-rasmli Open Graph
-  scrape;
+  `yt-dlp` orqali, `ignoreerrors="only_download"` bilan carousel’dagi har
+  bir slaydni alohida qayta ishlaydi; format topilmagan (rasm) slaydlar
+  yt-dlp’ning o‘z `thumbnails` ma’lumotidan tiklanadi — carousel’ning
+  **barcha** elementlari (Instagram’ning tashqi GraphQL’iga
+  murojaat qilmasdan) qaytariladi. Faqat yagona-rasmli post uchun (yt-dlp
+  o‘zi "video yo‘q" deb butun so‘rovni rad etganda) `instaloader`, so‘ng
+  Open Graph scrape ikkinchi darajali fallback sifatida ishlatiladi;
 - stream-first Telegram upload (`URLInputFile`);
 - stream ishlamasa, chunked temporary-file fallback;
 - Postgres (Supabase) asosidagi queue va cheklangan worker pool — Redis kerak emas;
@@ -17,12 +20,20 @@ MediaHub — Telegram bot orqali public Instagram Reel, video, rasm va carousel 
 - foydalanuvchi uchun faol job limiti va kunlik limit;
 - retry/fallback, timeout, cleanup va xatolik xabarlari;
 - majburiy obuna (force-subscribe) — kanal(lar)ga qo‘shilmagan foydalanuvchi botdan foydalana olmaydi;
-- **inline tugmali admin panel** (`/admin`, yoki ☰ menyu tugmasidan bir
-  bosishda) — statistika, broadcast, kanal boshqaruvi va foydalanuvchi
-  matnlarini tahrirlash, bittasi xabar bo‘lib ketmasdan, bitta xabar
-  ichida navigatsiya qilinadi;
+- **reply-keyboard admin panel tugmasi** — `/admin` yozish shart emas,
+  `/start`dan keyin matn maydoni tepasida doim ko‘rinib turadigan "🛠 Admin
+  panel" tugmasi bosilganda panel to‘g‘ridan-to‘g‘ri ochiladi (faqat
+  adminlarga ko‘rinadi);
+- statistika, broadcast, kanal boshqaruvi, matn va rate-limit tahrirlash —
+  bittasi xabar bo‘lib ketmasdan, bitta xabar ichida navigatsiya qilinadi;
 - foydalanuvchiga chiqadigan barcha matnlar (salomlashuv, yordam, xato
   xabarlari va h.k.) admin panel orqali kodga tegmasdan tahrirlanadi;
+- rate limitlar (daqiqalik so‘rov, foydalanuvchi boshiga faol job, kunlik
+  limit, navbat hajmi) `.env`ga tegmasdan admin panel orqali jonli
+  o‘zgartiriladi;
+- **standalone rejimda navbatni chetlab o‘tish**: hech bir worker band
+  bo‘lmasa, so‘rov Postgres navbatiga yozilmasdan to‘g‘ridan-to‘g‘ri
+  ishga tushadi — faqat real yuklama bo‘lganda navbat ishlatiladi;
 - **bitta process ichida polling + worker** (`app/standalone.py`) —
   alohida webhook Site’siz, faqat bitta Service’da to‘liq ishlaydi;
 - worker xato bo‘lsa to‘xtamaydi — har bir tsikl va har bir worker
@@ -44,8 +55,13 @@ shaxsiy Instagram hisobini bloklanish xavfiga qo‘yardi.
 ADMIN_IDS=123456789,987654321
 ```
 
-`ADMIN_IDS` ro‘yxatidagi Telegram ID’lar botga `/admin` yozganda tugmali
-panelni ko‘radi:
+`ADMIN_IDS` ro‘yxatidagi Telegram ID’lar botga `/admin` yozganda **yoki**
+`/start` dan keyin matn maydoni tepasida doim ko‘rinib turadigan
+**"🛠 Admin panel"** tugmasini bosganda tugmali panelni ko‘radi. Tugma —
+oddiy reply-keyboard, bosilganda uning matni oddiy xabar sifatida keladi
+va bot buni ushlab, panelni to‘g‘ridan-to‘g‘ri ochadi (buyruq yozish yoki
+Menu’dagi taklifni tanlab, alohida Yuborish bosish kerak emas). Faqat
+adminlarga ko‘rinadi — oddiy foydalanuvchilar bu tugmani ko‘rmaydi.
 
 - **📊 Statistika** — jami/faol/so‘nggi 24 soatdagi foydalanuvchilar soni.
 - **📢 Xabar yuborish** — matn so‘raladi, so‘ng barcha (bloklamagan)
@@ -65,6 +81,12 @@ panelni ko‘radi:
   tanlab, joriy matnini ko‘rib, ✏️ orqali yangi matn yozib almashtirish yoki
   ↩️ orqali standart matnga qaytarish mumkin. O‘zgarishlar bazada saqlanadi
   va darhol kuchga kiradi — kodni qayta deploy qilish shart emas.
+- **⚙️ Rate limit sozlamalari** — daqiqalik so‘rov limiti, foydalanuvchi
+  boshiga faol yuklashlar soni, kunlik yuklash limiti, va navbat hajmi
+  limitini `.env`ga tegmasdan, panel orqali jonli o‘zgartirish. Har bir
+  qiymat ruxsat etilgan oralig‘i bilan ko‘rsatiladi; ↩️ orqali `.env`dagi
+  standart qiymatga qaytarish mumkin. Bu qiymatlar hozircha admin
+  tahrirlagandan keyin darhol (15 soniyalik keshdan so‘ng) kuchga kiradi.
 
 Panel ichidagi barcha tugmalar **shu xabarning o‘zini** (`edit_message_text`
 orqali) yangilaydi — har bosishda yangi xabar kelib, chatni to‘ldirmaydi.

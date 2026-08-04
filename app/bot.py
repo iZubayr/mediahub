@@ -11,11 +11,14 @@ from aiogram.types import (
     BotCommandScopeChat,
     BotCommandScopeDefault,
     CallbackQuery,
+    KeyboardButton,
     Message,
     MenuButtonCommands,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 
-from .admin import create_admin_router
+from .admin import create_admin_router, is_admin
 from .config import Settings
 from .db import create_pool
 from .downloader import InstagramDownloader
@@ -26,6 +29,7 @@ from .logging_config import configure_logging
 from .models import DownloadJob
 from .queue import DownloadQueue
 from .texts import get_text
+from .ui_constants import ADMIN_PANEL_BUTTON_TEXT
 from .users import upsert_user
 from .validation import extract_url, validate_instagram_url
 from .worker_state import WorkerActivityTracker
@@ -42,6 +46,14 @@ USER_COMMANDS = [
 ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="admin", description="🛠 Admin panel"),
 ]
+
+
+def admin_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=ADMIN_PANEL_BUTTON_TEXT)]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 async def setup_menu_button(bot: Bot, settings: Settings) -> None:
@@ -121,7 +133,10 @@ def create_dispatcher(
     @router.message(CommandStart())
     async def start_handler(message: Message) -> None:
         text = await get_text(pool, "start")
-        await message.answer(text)
+        if message.from_user is not None and is_admin(settings, message.from_user.id):
+            await message.answer(text, reply_markup=admin_reply_keyboard())
+        else:
+            await message.answer(text)
 
     @router.message(Command("help"))
     async def help_handler(message: Message) -> None:

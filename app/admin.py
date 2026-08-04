@@ -10,7 +10,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from .channels import add_channel, list_channels, normalize_chat_ref, remove_channel_by_index
 from .config import Settings
+from .runtime_settings import RATE_LIMIT_DEFS, RATE_LIMIT_DEFS_BY_KEY, get_int, reset_int, set_int
 from .texts import TEXT_DEFS, get_text, reset_text, set_text
+from .ui_constants import ADMIN_PANEL_BUTTON_TEXT
 from .users import (
     count_users,
     create_broadcast,
@@ -37,6 +39,7 @@ class PendingAction(Enum):
     BROADCAST = auto()
     ADD_CHANNEL = auto()
     EDIT_TEXT = auto()
+    EDIT_LIMIT = auto()
 
 
 # user_id -> (action, extra) where extra carries e.g. the text_key being edited
@@ -54,6 +57,7 @@ def _main_menu_markup() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📢 Xabar yuborish", callback_data="admin:broadcast")],
             [InlineKeyboardButton(text="📡 Majburiy obuna kanallari", callback_data="admin:channels")],
             [InlineKeyboardButton(text="✏️ Matnlarni tahrirlash", callback_data="admin:texts")],
+            [InlineKeyboardButton(text="⚙️ Rate limit sozlamalari", callback_data="admin:limits")],
         ]
     )
 
@@ -98,14 +102,37 @@ def _text_detail_markup(key: str) -> InlineKeyboardMarkup:
     )
 
 
+def _limits_list_markup() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=limit_def.label, callback_data=f"admin:editlimit:{limit_def.key}")]
+        for limit_def in RATE_LIMIT_DEFS
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _limit_detail_markup(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Tahrirlash", callback_data=f"admin:dolimit:{key}")],
+            [InlineKeyboardButton(text="↩️ Standartga qaytarish", callback_data=f"admin:resetlimit:{key}")],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:limits")],
+        ]
+    )
+
+
 def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
     router = Router()
 
     # ---- Entry point -----------------------------------------------------
 
-    @router.message(Command("admin"))
+    def _is_admin_user(message: Message) -> bool:
+        return message.from_user is not None and is_admin(settings, message.from_user.id)
+
+    @router.message(Command("admin"), _is_admin_user)
+    @router.message(F.text == ADMIN_PANEL_BUTTON_TEXT, _is_admin_user)
     async def admin_panel(message: Message) -> None:
-        if message.from_user is None or not is_admin(settings, message.from_user.id):
+        if message.from_user is None:
             return
         _pending.pop(message.from_user.id, None)
         await message.answer("🛠 Admin panel", reply_markup=_main_menu_markup())
@@ -210,6 +237,37 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
                 await _text_detail_text(pool, key), reply_markup=_text_detail_markup(key)
             )
 
+        elif action == "limits":
+            _pending.pop(admin_id, None)
+            await callback.message.edit_text(
+                "Tahrirlamoqchi bo‘lgan limitni tanlang:", reply_markup=_limits_list_markup()
+            )
+
+        elif action.startswith("editlimit:"):
+            key = action.split(":", 1)[1]
+            await callback.message.edit_text(
+                await _limit_detail_text(pool, key, settings), reply_markup=_limit_detail_markup(key)
+            )
+
+        elif action.startswith("dolimit:"):
+            key = action.split(":", 1)[1]
+            _pending[admin_id] = (PendingAction.EDIT_LIMIT, key)
+            limit_def = RATE_LIMIT_DEFS_BY_KEY[key]
+            await callback.message.edit_text(
+                f"«{limit_def.label}» uchun yangi qiymat yuboring ({limit_def.min_value}"
+                f"–{limit_def.max_value} oralig‘ida butun son).\n"
+                f"{limit_def.help}\n\n"
+                "Bekor qilish uchun /cancel.",
+                reply_markup=_back_markup(f"admin:editlimit:{key}"),
+            )
+
+        elif action.startswith("resetlimit:"):
+            key = action.split(":", 1)[1]
+            await reset_int(pool, key)
+            await callback.message.edit_text(
+                await _limit_detail_text(pool, key, settings), reply_markup=_limit_detail_markup(key)
+            )
+
         await callback.answer()
 
     # ---- /cancel -----------------------------------------------------------
@@ -242,6 +300,21 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
         elif action is PendingAction.EDIT_TEXT and extra is not None:
             await set_text(pool, extra, message.text, updated_by=admin_id)
             await message.answer(f"✅ Yangilandi.\n\n{await _text_detail_text(pool, extra)}")
+
+        elif action is PendingAction.EDIT_LIMIT and extra is not None:
+            limit_def = RATE_LIMIT_DEFS_BY_KEY[extra]
+            raw = message.text.strip()
+            if not raw.lstrip("-").isdigit():
+                await message.answer("Faqat butun son yuboring, masalan: 20")
+                return
+            value = int(raw)
+            if not (limit_def.min_value <= value <= limit_def.max_value):
+                await message.answer(
+                    f"Qiymat {limit_def.min_value}–{limit_def.max_value} oralig‘ida bo‘lishi kerak."
+                )
+                return
+            await set_int(pool, extra, value, updated_by=admin_id)
+            await message.answer(f"✅ Yangilandi.\n\n{await _limit_detail_text(pool, extra, settings)}")
 
     return router
 
@@ -277,6 +350,16 @@ async def _text_detail_text(pool: asyncpg.Pool, key: str) -> str:
     customized = key in await get_customized_keys(pool)
     status = "✏️ tahrirlangan" if customized else "standart"
     return f"«{text_def.label}» ({status}):\n\n{current}"
+
+
+async def _limit_detail_text(pool: asyncpg.Pool, key: str, settings: Settings) -> str:
+    from .runtime_settings import get_customized_keys
+
+    limit_def = RATE_LIMIT_DEFS_BY_KEY[key]
+    current = await get_int(pool, key, settings)
+    customized = key in await get_customized_keys(pool)
+    status = "✏️ tahrirlangan" if customized else "standart (.env)"
+    return f"«{limit_def.label}» ({status}): {current}\n\n{limit_def.help}"
 
 
 async def _handle_add_channel(message: Message, bot: Bot, pool: asyncpg.Pool, admin_id: int) -> None:

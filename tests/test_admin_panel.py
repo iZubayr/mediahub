@@ -77,6 +77,36 @@ async def test_admin_command_shows_main_menu_with_buttons(monkeypatch) -> None:
     ]
     assert "📊 Statistika" in button_texts
     assert "✏️ Matnlarni tahrirlash" in button_texts
+    assert "⚙️ Rate limit sozlamalari" in button_texts
+
+
+@pytest.mark.asyncio
+async def test_limits_callback_shows_all_rate_limit_buttons(monkeypatch) -> None:
+    settings = _settings(monkeypatch)
+
+    class FakePool:
+        pass
+
+    dispatcher = create_dispatcher(settings, FakePool())
+    bot = _make_bot()
+    callback = _make_callback("admin:limits")
+    update = Update(update_id=10, callback_query=callback)
+
+    await dispatcher.feed_update(bot, update)
+
+    called_methods = [call.args[0].__class__.__name__ for call in bot.call_args_list]
+    assert "EditMessageText" in called_methods
+    edit_call = next(
+        call for call in bot.call_args_list
+        if call.args[0].__class__.__name__ == "EditMessageText"
+    )
+    button_texts = [
+        button.text
+        for row in edit_call.args[0].reply_markup.inline_keyboard
+        for button in row
+    ]
+    assert "Daqiqalik so‘rov limiti" in button_texts
+    assert "Kunlik yuklash limiti" in button_texts
 
 
 @pytest.mark.asyncio
