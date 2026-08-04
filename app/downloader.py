@@ -100,41 +100,56 @@ class InstagramDownloader:
             "skip_download": True,
             "noplaylist": False,
             "format": "best[ext=mp4]/best",
-            "http_headers": {"User-Agent": self._user_agent()},
+            # Deliberately NOT setting a custom User-Agent here. yt-dlp's
+            # Instagram extractor stopped hardcoding one in 2024 (see
+            # yt-dlp/yt-dlp@079a7bc) and now relies on yt-dlp's own
+            # `random_user_agent`, which is updated with every release to
+            # track current browser versions. Overriding it with a fixed
+            # string here (as this code previously did) means every request
+            # carries an increasingly dated, easily-fingerprinted
+            # User-Agent — worse for evading Instagram's growing anti-bot
+            # measures than trusting yt-dlp's own current default.
             # Skip fetching comments — we never display them, and it's an
             # extra Instagram API round-trip per post that only adds
             # latency without benefit.
             "getcomments": False,
-            # Carousel posts are extracted by yt-dlp as a playlist where
-            # each slide is a separate entry (see yt-dlp's
-            # InstagramIE._extract_product), and yt-dlp's Instagram
-            # extractor already returns full sidecar image/video data for
-            # every slide. Without ignoreerrors, ONE image-only slide in an
-            # otherwise-fine carousel raises "No video formats found!" for
-            # the whole post and aborts extraction entirely — even though
-            # the other slides (and that slide's own thumbnail) are fine.
-            # "only_download" limits the leniency to the download stage
-            # (metadata extraction errors still raise normally).
-            "ignoreerrors": "only_download",
+            # THE key option for carousels: yt-dlp raises "No video formats
+            # found!" for any post/slide with no video stream (i.e. an
+            # image), via YoutubeDL.raise_no_formats(), which checks
+            # exactly this parameter:
+            #   ignored = self.params.get('ignore_no_formats_error')
+            # This is a DIFFERENT option from `ignoreerrors` (which only
+            # affects the later download stage, not format-selection during
+            # extraction — a subtlety that caused an earlier, incomplete
+            # attempt at this same fix to not actually help). With this set,
+            # an image slide's info dict is preserved (as a warning, not a
+            # raised error) with an empty 'formats' list but its
+            # 'thumbnails' populated, which we recover into a usable image
+            # URL below. See yt-dlp/yt-dlp#7569 (upstream, marked wontfix)
+            # for confirmation this is a known, common Instagram carousel
+            # issue with no better upstream fix available.
+            "ignore_no_formats_error": True,
         }
         # Deliberately no cookie/login support: authenticating as a real
         # Instagram account to scrape on behalf of arbitrary bot users risks
         # that account being flagged and banned by Instagram, and the bot is
         # scoped to public content only (see validation.py, which rejects
-        # story URLs outright since those need a logged-in session).
+        # story URLs outright since those need a logged-in session — no
+        # login-free method exists for stories; every working open-source
+        # implementation found requires either a login session or cookies).
 
         with YoutubeDL(options) as ydl:
             try:
                 info = ydl.extract_info(source_url, download=False)
             except DownloadError as exc:
                 message = str(exc).lower()
-                # This path now only triggers for a single-image post (no
-                # playlist/carousel at all — ignoreerrors doesn't apply
-                # since there's nothing to skip to). The instaloader/Open
-                # Graph fallbacks still cover that case. Login walls, rate
-                # limits, and deleted posts should still surface as their
-                # real error rather than silently retrying with something
-                # that would just fail again confusingly.
+                # With ignore_no_formats_error=True, a single-image post
+                # (no playlist at all) still raises here in some yt-dlp
+                # versions since there's no other entry to fall back to.
+                # The instaloader/Open Graph fallbacks cover that case.
+                # Login walls, rate limits, and deleted posts should still
+                # surface as their real error rather than silently retrying
+                # with something that would just fail again confusingly.
                 if any(marker in message for marker in NO_VIDEO_ERROR_MARKERS):
                     logger.info("no_video_detected trying_instaloader url=%s", source_url)
                     try:
@@ -160,7 +175,7 @@ class InstagramDownloader:
         if not isinstance(info, dict):
             raise MediaNotFound("Media ma’lumotlari topilmadi.")
 
-        # With ignoreerrors="only_download", a carousel slide that yt-dlp
+        # With ignore_no_formats_error=True, a carousel slide that yt-dlp
         # couldn't find a video format for comes back as an entry with no
         # 'formats' but (for image slides) a populated 'thumbnails' list —
         # recover those as images instead of dropping the slide entirely.

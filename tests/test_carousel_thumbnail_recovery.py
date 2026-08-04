@@ -81,9 +81,13 @@ def test_image_entry_without_thumbnails_is_left_unrecovered() -> None:
     assert "url" not in info["entries"][0]
 
 
-def test_ignoreerrors_option_is_set_to_only_download() -> None:
-    """Confirms the ignoreerrors option is actually passed to YoutubeDL —
-    without it, one bad slide aborts the whole carousel extraction."""
+def test_ignore_no_formats_error_option_is_set() -> None:
+    """Confirms the CORRECT yt-dlp option is passed to YoutubeDL. This is
+    the actual mechanism raise_no_formats() checks — an earlier, incorrect
+    fix attempt set `ignoreerrors="only_download"` instead, which controls
+    a completely different stage (the download step, not format-selection
+    during extraction) and did not actually prevent the "No video formats
+    found!" error from aborting extraction."""
     downloader = _downloader()
     captured_options = {}
 
@@ -103,4 +107,4 @@ def test_ignoreerrors_option_is_set_to_only_download() -> None:
     with patch("app.downloader.YoutubeDL", FakeYoutubeDL):
         downloader._extract_info("https://www.instagram.com/p/ABC123/")
 
-    assert captured_options.get("ignoreerrors") == "only_download"
+    assert captured_options.get("ignore_no_formats_error") is True
