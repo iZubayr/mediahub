@@ -82,6 +82,23 @@ class InstagramDownloader:
         else:
             raw_entries = [info]
 
+        recovered = 0
+        for entry in raw_entries:
+            if entry and not entry.get("formats") and not entry.get("url"):
+                thumbnails = entry.get("thumbnails") or []
+                if thumbnails:
+                    # yt-dlp orders thumbnails smallest-to-largest for this
+                    # extractor (see _extract_product_media's
+                    # `reversed(...)` call); the last one is highest-res.
+                    entry["url"] = thumbnails[-1]["url"]
+                    entry["ext"] = "jpg"
+                    entry["vcodec"] = "none"
+                    recovered += 1
+        if recovered:
+            logger.info(
+                "media_recovered_from_thumbnails url=%s count=%s", source_url, recovered
+            )
+
         items: list[MediaItem] = []
         for index, entry in enumerate(raw_entries, start=1):
             item = self._to_media_item(entry, index=index)
@@ -174,32 +191,6 @@ class InstagramDownloader:
                 raise
         if not isinstance(info, dict):
             raise MediaNotFound("Media ma’lumotlari topilmadi.")
-
-        # With ignore_no_formats_error=True, a carousel slide that yt-dlp
-        # couldn't find a video format for comes back as an entry with no
-        # 'formats' but (for image slides) a populated 'thumbnails' list —
-        # recover those as images instead of dropping the slide entirely.
-        entries = info.get("entries")
-        if entries:
-            recovered = 0
-            for entry in entries:
-                if entry and not entry.get("formats") and not entry.get("url"):
-                    thumbnails = entry.get("thumbnails") or []
-                    if thumbnails:
-                        # yt-dlp orders thumbnails smallest-to-largest for
-                        # this extractor (see _extract_product_media's
-                        # `reversed(...)` call); the last one is highest-res.
-                        entry["url"] = thumbnails[-1]["url"]
-                        entry["ext"] = "jpg"
-                        entry["vcodec"] = "none"
-                        recovered += 1
-            if recovered:
-                logger.info(
-                    "carousel_images_recovered_from_thumbnails url=%s count=%s",
-                    source_url,
-                    recovered,
-                )
-
         return info, False
 
     def _extract_via_instaloader(self, source_url: str) -> dict[str, Any]:
