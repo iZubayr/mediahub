@@ -165,7 +165,7 @@ TEXT_DEFS: list[TextDef] = [
 
 TEXT_DEFS_BY_KEY: dict[str, TextDef] = {item.key: item for item in TEXT_DEFS}
 
-_CACHE_TTL_SECONDS = 15
+_CACHE_TTL_SECONDS = 60
 _cache: dict[str, str] = {}
 _cache_expires_at: float = 0.0
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -24,9 +25,23 @@ logger = logging.getLogger(__name__)
 NOT_SUBSCRIBED_STATUSES = {ChatMemberStatus.LEFT, ChatMemberStatus.KICKED}
 
 # Channel list rarely changes (admin adds/removes it manually), so caching it
-# for a few seconds avoids a DB round-trip on every single message without
-# meaningfully delaying an admin's own add/remove taking effect.
-CHANNEL_CACHE_TTL_SECONDS = 15
+# for a while avoids a DB round-trip on every single message. This is safe
+# to set fairly high because admin.py calls invalidate_channel_cache() right
+# after any add/remove, so admin edits take effect immediately regardless of
+# this TTL — it only governs the worst case if invalidation is somehow
+# missed (e.g. a different process instance).
+CHANNEL_CACHE_TTL_SECONDS = 60
+
+_cached_channels: list[ForceSubChannel] = []
+_cache_expires_at: float = 0.0
+
+
+def invalidate_channel_cache() -> None:
+    """Forces the next _get_channels() call to hit the DB. Call this after
+    any add_channel/remove_channel so an admin's edit is visible on their
+    very next message, instead of waiting out CHANNEL_CACHE_TTL_SECONDS."""
+    global _cache_expires_at
+    _cache_expires_at = 0.0
 
 
 class ForceSubscribeMiddleware(BaseMiddleware):
@@ -41,16 +56,15 @@ class ForceSubscribeMiddleware(BaseMiddleware):
     def __init__(self, settings: Settings, pool: asyncpg.Pool) -> None:
         self.settings = settings
         self.pool = pool
-        self._cached_channels: list[ForceSubChannel] = []
-        self._cache_expires_at: float = 0.0
         super().__init__()
 
     async def _get_channels(self) -> list[ForceSubChannel]:
+        global _cached_channels, _cache_expires_at
         now = time.monotonic()
-        if now >= self._cache_expires_at:
-            self._cached_channels = await list_channels(self.pool)
-            self._cache_expires_at = now + CHANNEL_CACHE_TTL_SECONDS
-        return self._cached_channels
+        if now >= _cache_expires_at:
+            _cached_channels = await list_channels(self.pool)
+            _cache_expires_at = now + CHANNEL_CACHE_TTL_SECONDS
+        return _cached_channels
 
     async def __call__(
         self,
@@ -79,23 +93,25 @@ class ForceSubscribeMiddleware(BaseMiddleware):
     async def _missing_channels(
         self, bot: Bot, user_id: int, channels: list[ForceSubChannel]
     ) -> list[ForceSubChannel]:
-        missing: list[ForceSubChannel] = []
-        for channel in channels:
-            try:
-                member = await bot.get_chat_member(chat_id=channel.chat_ref, user_id=user_id)
-            except TelegramBadRequest as error:
-                # Most common cause: the bot itself isn't an admin in this
-                # channel, so Telegram refuses the lookup for anyone. Log it
-                # loudly but don't lock every user out for a config mistake.
-                logger.error(
-                    "force_sub_check_failed channel=%s error=%s",
-                    channel.chat_ref,
-                    error.message,
-                )
-                continue
-            if member.status in NOT_SUBSCRIBED_STATUSES:
-                missing.append(channel)
-        return missing
+        results = await asyncio.gather(
+            *(self._check_one_channel(bot, user_id, channel) for channel in channels)
+        )
+        return [channel for channel, is_missing in zip(channels, results) if is_missing]
+
+    async def _check_one_channel(self, bot: Bot, user_id: int, channel: ForceSubChannel) -> bool:
+        try:
+            member = await bot.get_chat_member(chat_id=channel.chat_ref, user_id=user_id)
+        except TelegramBadRequest as error:
+            # Most common cause: the bot itself isn't an admin in this
+            # channel, so Telegram refuses the lookup for anyone. Log it
+            # loudly but don't lock every user out for a config mistake.
+            logger.error(
+                "force_sub_check_failed channel=%s error=%s",
+                channel.chat_ref,
+                error.message,
+            )
+            return False
+        return member.status in NOT_SUBSCRIBED_STATUSES
 
     async def _prompt_join(self, event: TelegramObject, missing: list[ForceSubChannel]) -> None:
         buttons: list[list[InlineKeyboardButton]] = []

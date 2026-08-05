@@ -230,6 +230,19 @@ async def _supervised_worker(
             await asyncio.sleep(5)
 
 
+async def rate_limit_cleanup_loop(limiter: RateLimiter) -> None:
+    """Periodically deletes old rate-minute buckets, replacing the inline
+    per-request cleanup that used to run on every single allow_request()
+    call (an extra DB round-trip on every incoming message for a cleanup
+    that only needs to happen occasionally)."""
+    while True:
+        await asyncio.sleep(120)
+        try:
+            await limiter.cleanup_old_buckets()
+        except Exception:
+            logger.exception("rate_limit_cleanup_failed")
+
+
 async def main() -> None:
     configure_logging()
     settings = Settings()
@@ -249,6 +262,7 @@ async def main() -> None:
         for index in range(settings.worker_concurrency)
     ]
     tasks.append(asyncio.create_task(stuck_job_recovery_loop(queue, settings)))
+    tasks.append(asyncio.create_task(rate_limit_cleanup_loop(limiter)))
     try:
         # return_exceptions=True: one task's unhandled exception must not
         # cancel every other still-healthy worker task via gather's default

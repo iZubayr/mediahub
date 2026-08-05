@@ -17,6 +17,19 @@ from .worker_state import WorkerActivityTracker
 logger = logging.getLogger(__name__)
 
 
+async def rate_limit_cleanup_loop(limiter: RateLimiter) -> None:
+    """Periodically deletes old rate-minute buckets, replacing the inline
+    per-request cleanup that used to run on every single allow_request()
+    call (an extra DB round-trip on every incoming message for a cleanup
+    that only needs to happen occasionally)."""
+    while True:
+        await asyncio.sleep(120)
+        try:
+            await limiter.cleanup_old_buckets()
+        except Exception:
+            logger.exception("rate_limit_cleanup_failed")
+
+
 async def main() -> None:
     """Runs everything — bot polling, N worker tasks, and stuck-job
     recovery — in one process. This avoids needing a separate AlwaysData
@@ -66,9 +79,10 @@ async def main() -> None:
         for index in range(settings.worker_concurrency)
     ]
     recovery_task = asyncio.create_task(stuck_job_recovery_loop(queue, settings))
+    cleanup_task = asyncio.create_task(rate_limit_cleanup_loop(limiter))
     polling_task = asyncio.create_task(dispatcher.start_polling(bot))
 
-    all_tasks = worker_tasks + [recovery_task, polling_task]
+    all_tasks = worker_tasks + [recovery_task, cleanup_task, polling_task]
     try:
         # return_exceptions=True: if polling or a worker task raises, it
         # must not silently cancel every other still-healthy task via

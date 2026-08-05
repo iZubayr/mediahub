@@ -34,6 +34,15 @@ MediaHub — Telegram bot orqali public Instagram Reel, video, rasm va carousel 
 - **standalone rejimda navbatni chetlab o‘tish**: hech bir worker band
   bo‘lmasa, so‘rov Postgres navbatiga yozilmasdan to‘g‘ridan-to‘g‘ri
   ishga tushadi — faqat real yuklama bo‘lganda navbat ishlatiladi;
+- **tezlik optimallashtirishlari**: daqiqalik va kunlik rate-limit
+  tekshiruvlari ketma-ket emas, parallel (`asyncio.gather`) bajariladi;
+  majburiy obuna bir nechta kanal bo‘lsa, ularning barchasi ham parallel
+  tekshiriladi (avval ketma-ket, har biri alohida Telegram so‘rovi edi);
+  rate-limit jadvalini tozalash endi har bir xabarda emas, background
+  tsiklda (2 daqiqada bir marta) bajariladi; matn/limit/kanal keshlari
+  60 soniyagacha uzaytirildi, admin tahrirlasa esa darhol (keshni
+  kutmasdan) bekor qilinadi; broadcast xabarlari endi partiya ichida
+  parallel yuboriladi (avval bittalab, endi 20 tadan bir vaqtda);
 - **bitta process ichida polling + worker** (`app/standalone.py`) —
   alohida webhook Site’siz, faqat bitta Service’da to‘liq ishlaydi;
 - worker xato bo‘lsa to‘xtamaydi — har bir tsikl va har bir worker

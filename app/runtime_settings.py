@@ -50,7 +50,7 @@ RATE_LIMIT_DEFS: list[RateLimitDef] = [
 
 RATE_LIMIT_DEFS_BY_KEY: dict[str, RateLimitDef] = {item.key: item for item in RATE_LIMIT_DEFS}
 
-_CACHE_TTL_SECONDS = 15
+_CACHE_TTL_SECONDS = 60
 _cache: dict[str, int] = {}
 _cache_expires_at: float = 0.0
 

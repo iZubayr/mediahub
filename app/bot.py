@@ -168,10 +168,21 @@ def create_dispatcher(
             return
 
         try:
-            if not await limiter.allow_request(user_id):
+            allowed_per_minute, allowed_per_day, queued_text = await asyncio.gather(
+                limiter.allow_request(user_id),
+                limiter.allow_daily_download(user_id),
+                get_text(pool, "queued"),
+            )
+            if not allowed_per_minute:
+                if allowed_per_day:
+                    # The daily counter was incremented in parallel above,
+                    # but this request is being rejected on the per-minute
+                    # limit — undo that increment so a per-minute rejection
+                    # never silently burns a daily download credit.
+                    await limiter.release_daily_download(user_id)
                 await message.answer(await get_text(pool, "rate_limited"))
                 return
-            if not await limiter.allow_daily_download(user_id):
+            if not allowed_per_day:
                 await message.answer(await get_text(pool, "daily_limit_reached"))
                 return
         except asyncpg.PostgresError:
@@ -179,7 +190,7 @@ def create_dispatcher(
             await message.answer(await get_text(pool, "server_busy"))
             return
 
-        status_message = await message.answer(await get_text(pool, "queued"))
+        status_message = await message.answer(queued_text)
         job = DownloadJob.create(
             user_id=user_id,
             chat_id=message.chat.id,

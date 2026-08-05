@@ -41,12 +41,20 @@ class RateLimiter:
                 user_id,
                 bucket,
             )
-            # Best-effort cleanup of old buckets (older than 5 minutes).
+        return value <= limit
+
+    async def cleanup_old_buckets(self) -> None:
+        """Deletes rate-minute buckets older than 5 minutes. This used to
+        run inline on every allow_request() call, adding an extra DB
+        round-trip to every single incoming message for a cleanup that only
+        needs to happen occasionally. Call this periodically (e.g. from a
+        background loop) instead."""
+        bucket = int(time.time() // 60)
+        async with self.pool.acquire() as conn:
             await conn.execute(
                 "DELETE FROM mediahub_rate_minute WHERE bucket < $1",
                 bucket - 5,
             )
-        return value <= limit
 
     async def allow_daily_download(self, user_id: int) -> bool:
         limit = await get_int(self.pool, "daily_download_limit", self.settings)
@@ -73,6 +81,21 @@ class RateLimiter:
                     day,
                 )
         return False
+
+    async def release_daily_download(self, user_id: int) -> None:
+        """Rolls back one daily-download increment. Used when
+        allow_daily_download() succeeded but the request is being rejected
+        for an unrelated reason (e.g. the per-minute limit, checked in
+        parallel) — so a rejected request never silently consumes a daily
+        download credit."""
+        day = datetime.now(timezone.utc).date()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE mediahub_rate_daily SET count = count - 1 "
+                "WHERE user_id = $1 AND day = $2",
+                user_id,
+                day,
+            )
 
     async def acquire_job_slot(self, user_id: int, job_id: UUID) -> bool:
         limit = await get_int(self.pool, "max_active_jobs_per_user", self.settings)

@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from .channels import add_channel, list_channels, normalize_chat_ref, remove_channel_by_index
 from .config import Settings
+from .force_sub import invalidate_channel_cache
 from .runtime_settings import RATE_LIMIT_DEFS, RATE_LIMIT_DEFS_BY_KEY, get_int, reset_int, set_int
 from .texts import TEXT_DEFS, get_text, reset_text, set_text
 from .ui_constants import ADMIN_PANEL_BUTTON_TEXT
@@ -25,9 +26,36 @@ from .users import (
 logger = logging.getLogger(__name__)
 
 # Telegram allows roughly 30 messages/second in aggregate across different
-# chats. Sending in small batches with a short pause between batches keeps
-# a broadcast well under that without needing a queueing library.
+# chats. Sending a sub-batch of messages concurrently (via asyncio.gather)
+# then pausing briefly keeps a broadcast well under that limit while being
+# far faster than sending one message at a time — 200 recipients sent
+# strictly sequentially could take minutes; concurrent sub-batches cut that
+# to a few seconds.
+BROADCAST_CONCURRENCY = 20
 BROADCAST_BATCH_PAUSE_SECONDS = 1.0
+
+
+async def _send_one_broadcast_message(
+    bot: Bot, pool: asyncpg.Pool, user_id: int, text: str
+) -> bool:
+    """Returns True if the message was sent (after at most one retry on a
+    flood-control wait), False if it failed."""
+    try:
+        await bot.send_message(user_id, text)
+        return True
+    except TelegramRetryAfter as error:
+        await asyncio.sleep(error.retry_after)
+        try:
+            await bot.send_message(user_id, text)
+            return True
+        except Exception:
+            return False
+    except TelegramForbiddenError:
+        await mark_blocked(pool, user_id, True)
+        return False
+    except Exception:
+        logger.exception("broadcast_send_failed user_id=%s", user_id)
+        return False
 
 
 class PendingAction(Enum):
@@ -191,6 +219,8 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
         elif action.startswith("rmchannel:"):
             index = int(action.split(":", 1)[1])
             removed = await remove_channel_by_index(pool, index)
+            if removed is not None:
+                invalidate_channel_cache()
             channels = await list_channels(pool)
             prefix = f"🗑 O‘chirildi: {removed.title or removed.chat_ref}\n\n" if removed else ""
             await callback.message.edit_text(
@@ -413,6 +443,7 @@ async def _handle_add_channel(message: Message, bot: Bot, pool: asyncpg.Pool, ad
         await message.answer("Bu kanal ro‘yxatda allaqachon bor.")
         return
 
+    invalidate_channel_cache()
     channels = await list_channels(pool)
     await message.answer(
         f"✅ Qo‘shildi: {chat.title or chat_ref} ({chat_ref})\n\n" + await _channels_text(channels),
@@ -428,24 +459,14 @@ async def run_broadcast(bot: Bot, pool: asyncpg.Pool, admin_id: int, text: str) 
     sent = 0
     failed = 0
     async for batch in iter_broadcast_targets(pool):
-        for user_id in batch:
-            try:
-                await bot.send_message(user_id, text)
-                sent += 1
-            except TelegramRetryAfter as error:
-                await asyncio.sleep(error.retry_after)
-                try:
-                    await bot.send_message(user_id, text)
-                    sent += 1
-                except Exception:
-                    failed += 1
-            except TelegramForbiddenError:
-                await mark_blocked(pool, user_id, True)
-                failed += 1
-            except Exception:
-                logger.exception("broadcast_send_failed user_id=%s", user_id)
-                failed += 1
-        await asyncio.sleep(BROADCAST_BATCH_PAUSE_SECONDS)
+        for i in range(0, len(batch), BROADCAST_CONCURRENCY):
+            sub_batch = batch[i : i + BROADCAST_CONCURRENCY]
+            results = await asyncio.gather(
+                *(_send_one_broadcast_message(bot, pool, user_id, text) for user_id in sub_batch)
+            )
+            sent += sum(results)
+            failed += len(results) - sum(results)
+            await asyncio.sleep(BROADCAST_BATCH_PAUSE_SECONDS)
 
     await finish_broadcast(pool, broadcast_id, sent, failed)
     await bot.send_message(admin_id, f"✅ Yuborish tugadi.\nYuborildi: {sent}\nXato: {failed}")
