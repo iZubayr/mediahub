@@ -33,28 +33,61 @@ async def update_status(bot: Bot, job: DownloadJob, text: str) -> None:
         logger.warning("status_update_failed job_id=%s", job.job_id, exc_info=True)
 
 
-def notify_status(bot: Bot, job: DownloadJob, text: str) -> None:
-    """Fire-and-forget status update: schedules the Telegram edit as a
-    background task instead of awaiting it inline. Status text is purely
-    informational (what the user sees while waiting), so there's no reason
-    to block the actual download/upload work — which is on the real
-    critical path — on a Telegram API round-trip just to update a progress
-    message. Errors are still logged by update_status itself.
+def notify_status_text(bot: Bot, job: DownloadJob, pool: asyncpg.Pool, key: str, **format_args) -> None:
+    """Fire-and-forget status update where even the text lookup (get_text,
+    a cache or DB read) happens inside the background task instead of being
+    awaited before scheduling it. The earlier version awaited get_text()
+    inline and only made the Telegram edit itself non-blocking, which still
+    left a small but real delay on the critical path for every status
+    update, multiplied by however many items are in a carousel.
     """
-    asyncio.ensure_future(update_status(bot, job, text))
+
+    async def _run() -> None:
+        text = await get_text(pool, key, **format_args)
+        await update_status(bot, job, text)
+
+    asyncio.ensure_future(_run())
+
+
+async def send_items(
+    bot: Bot,
+    pool: asyncpg.Pool,
+    downloader: InstagramDownloader,
+    settings: Settings,
+    job: DownloadJob,
+    items: list[MediaItem],
+    total: int,
+) -> None:
+    """Sends every item in `items`, with up to 2 uploads in flight at once.
+    Telegram upload requests are the single biggest remaining cost in the
+    total pipeline (network-bound, not CPU-bound), so overlapping a couple
+    of them meaningfully cuts total time for multi-image carousels versus
+    sending strictly one-at-a-time, without saturating Telegram's per-chat
+    rate limits the way full parallelism across a large carousel could.
+    """
+    caption_base = await get_text(pool, "media_caption")
+    semaphore = asyncio.Semaphore(2)
+
+    async def _send_with_limit(index: int, item: MediaItem) -> None:
+        async with semaphore:
+            notify_status_text(bot, job, pool, "uploading", index=index, total=total)
+            await send_item(bot, downloader, settings, job, item, index, total, caption_base)
+
+    await asyncio.gather(
+        *(_send_with_limit(index, item) for index, item in enumerate(items, start=1))
+    )
 
 
 async def send_item(
     bot: Bot,
-    pool: asyncpg.Pool,
     downloader: InstagramDownloader,
     settings: Settings,
     job: DownloadJob,
     item: MediaItem,
     index: int,
     total: int,
+    caption_base: str,
 ) -> None:
-    caption_base = await get_text(pool, "media_caption")
     caption = f"{caption_base} • {index}/{total}" if total > 1 else caption_base
     for attempt in range(settings.retry_attempts + 1):
         direct_file = URLInputFile(
@@ -129,16 +162,12 @@ async def process_job(
     job: DownloadJob,
 ) -> None:
     try:
-        notify_status(bot, job, await get_text(pool, "checking"))
+        notify_status_text(bot, job, pool, "checking")
         result = await downloader.resolve(job.source_url)
         items = result.items
         total = len(items)
 
-        for index, item in enumerate(items, start=1):
-            notify_status(
-                bot, job, await get_text(pool, "uploading", index=index, total=total)
-            )
-            await send_item(bot, pool, downloader, settings, job, item, index, total)
+        await send_items(bot, pool, downloader, settings, job, items, total)
 
         if result.partial:
             await update_status(bot, job, await get_text(pool, "partial_carousel"))
@@ -150,9 +179,15 @@ async def process_job(
         message = await user_error_message(pool, error)
         await update_status(bot, job, f"❌ {message}")
     finally:
-        await limiter.release_job_slot(job.user_id, job.job_id)
-        await downloader.cleanup(str(job.job_id))
-        await queue.acknowledge(job)
+        # These three cleanup steps are independent of each other (a
+        # rate-limit slot release, temp-file cleanup, and marking the job
+        # done in Postgres) — running them concurrently instead of one
+        # after another shaves a bit more off the tail of every job.
+        await asyncio.gather(
+            limiter.release_job_slot(job.user_id, job.job_id),
+            downloader.cleanup(str(job.job_id)),
+            queue.acknowledge(job),
+        )
 
 
 async def worker_loop(

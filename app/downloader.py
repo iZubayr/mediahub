@@ -146,6 +146,14 @@ class InstagramDownloader:
             # for confirmation this is a known, common Instagram carousel
             # issue with no better upstream fix available.
             "ignore_no_formats_error": True,
+            # Caps how long a single stalled connection can hang before
+            # yt-dlp gives up and raises, instead of a slow/stuck Instagram
+            # response tying up this worker (and the job slot it holds)
+            # indefinitely. 15s comfortably covers normal response times
+            # (observed in production logs: usually 1-3s) while still
+            # failing fast enough that a stuck request doesn't block
+            # capacity for other users for minutes.
+            "socket_timeout": 15,
         }
         # Deliberately no cookie/login support: authenticating as a real
         # Instagram account to scrape on behalf of arbitrary bot users risks
