@@ -28,6 +28,7 @@ from .limits import RateLimiter
 from .logging_config import configure_logging
 from .models import DownloadJob
 from .queue import DownloadQueue
+from .runtime_settings import get_int
 from .texts import get_text
 from .ui_constants import ADMIN_PANEL_BUTTON_TEXT
 from .users import upsert_user
@@ -140,11 +141,15 @@ def create_dispatcher(
 
     @router.message(Command("help"))
     async def help_handler(message: Message) -> None:
+        requests_per_minute, daily_download_limit = await asyncio.gather(
+            get_int(pool, "requests_per_minute", settings),
+            get_int(pool, "daily_download_limit", settings),
+        )
         text = await get_text(
             pool,
             "help",
-            requests_per_minute=settings.requests_per_minute,
-            daily_download_limit=settings.daily_download_limit,
+            requests_per_minute=requests_per_minute,
+            daily_download_limit=daily_download_limit,
         )
         await message.answer(text)
 
