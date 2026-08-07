@@ -90,6 +90,14 @@ adminlarga ko‘rinadi — oddiy foydalanuvchilar bu tugmani ko‘rmaydi.
   tanlab, joriy matnini ko‘rib, ✏️ orqali yangi matn yozib almashtirish yoki
   ↩️ orqali standart matnga qaytarish mumkin. O‘zgarishlar bazada saqlanadi
   va darhol kuchga kiradi — kodni qayta deploy qilish shart emas.
+  - Yuklangan har bir media faylning tagyozuvi (caption) ikki qismdan
+    iborat va ikkalasi ham alohida tahrirlanadi: **«Caption’dagi havola
+    matni»** — original Instagram postiga yashiringan havola sifatida
+    tepada chiqadigan matn (masalan «Video havolasi»), bosilganda original
+    postga o‘tkazadi; **«Media fayl tagyozuvi (caption)»** — undan pastda,
+    oddiy matn sifatida chiqadigan qism. Telegram media (rasm/video)
+    caption’ida havola preview ko‘rsatilmaydi (bu Telegram’ning o‘zining
+    cheklovi) — faqat bosilganda ochiladi.
 - **⚙️ Rate limit sozlamalari** — daqiqalik so‘rov limiti, foydalanuvchi
   boshiga faol yuklashlar soni, kunlik yuklash limiti, va navbat hajmi
   limitini `.env`ga tegmasdan, panel orqali jonli o‘zgartirish. Har bir

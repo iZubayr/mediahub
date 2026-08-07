@@ -139,11 +139,21 @@ TEXT_DEFS: list[TextDef] = [
     TextDef(
         key="media_caption",
         label="Media fayl tagyozuvi (caption)",
-        default="MediaHub",
+        default="MediaHub orqali yuklandi",
         help=(
-            "Har bir yuborilgan media fayl ostida chiqadigan matn. "
-            "Bir nechta fayl bo‘lsa (carousel) oxiriga « • 1/3 » kabi "
-            "raqam avtomatik qo‘shiladi."
+            "Havoladan pastda chiqadigan oddiy matn. Bir nechta fayl bo‘lsa "
+            "(carousel) oxiriga « • 1/3 » kabi raqam avtomatik qo‘shiladi."
+        ),
+    ),
+    TextDef(
+        key="media_caption_link_text",
+        label="Caption’dagi havola matni",
+        default="Video havolasi",
+        help=(
+            "Caption’ning eng tepasida, original Instagram havolasiga "
+            "yashiringan link sifatida chiqadigan matn (masalan «Video "
+            "havolasi» yoki «Manba»). Bosilganda foydalanuvchi original "
+            "postga o‘tadi."
         ),
     ),
     TextDef(

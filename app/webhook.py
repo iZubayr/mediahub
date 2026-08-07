@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import Update
 from fastapi import FastAPI, HTTPException, Request
 
@@ -29,7 +31,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise RuntimeError("TELEGRAM_WEBHOOK_SECRET must contain at least 16 characters")
 
     pool = await create_pool(settings)
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dispatcher = create_dispatcher(settings, pool)
     await bot.set_webhook(
         url=settings.webhook_url,

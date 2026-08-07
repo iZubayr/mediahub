@@ -1,9 +1,12 @@
 import asyncio
 import logging
+from html import escape
 from pathlib import Path
 
 import asyncpg
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile, URLInputFile
 
@@ -65,7 +68,7 @@ async def send_items(
     sending strictly one-at-a-time, without saturating Telegram's per-chat
     rate limits the way full parallelism across a large carousel could.
     """
-    caption_base = await get_text(pool, "media_caption")
+    caption_base = await build_caption(pool, job.source_url)
     semaphore = asyncio.Semaphore(2)
 
     async def _send_with_limit(index: int, item: MediaItem) -> None:
@@ -76,6 +79,28 @@ async def send_items(
     await asyncio.gather(
         *(_send_with_limit(index, item) for index, item in enumerate(items, start=1))
     )
+
+
+async def build_caption(pool: asyncpg.Pool, source_url: str) -> str:
+    """Builds the two-part HTML caption:
+    1. A hidden link — the editable "link text" wrapped in <a href> pointing
+       at the original Instagram post/reel URL. Tapping it opens the
+       original post; Telegram does not render a link preview for links
+       inside a photo/video caption (only in plain text messages), so
+       there's nothing further to configure there.
+    2. The plain editable caption text on the line below.
+    Requires HTML parse mode to be set on the Bot instance sending this
+    (see standalone.py/webhook.py/worker.py's Bot(default=...) setup) —
+    otherwise Telegram would show the raw <a href=...> markup as text.
+    """
+    link_text, caption_text = await asyncio.gather(
+        get_text(pool, "media_caption_link_text"),
+        get_text(pool, "media_caption"),
+    )
+    escaped_url = escape(source_url, quote=True)
+    escaped_link_text = escape(link_text)
+    escaped_caption = escape(caption_text)
+    return f'<a href="{escaped_url}">{escaped_link_text}</a>\n{escaped_caption}'
 
 
 async def send_item(
@@ -289,7 +314,10 @@ async def main() -> None:
     await queue.recover_stuck()
     limiter = RateLimiter(pool, settings)
     downloader = InstagramDownloader(settings)
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     tasks = [
         asyncio.create_task(
             _supervised_worker(bot, pool, queue, limiter, downloader, settings, index)

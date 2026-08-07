@@ -2,6 +2,8 @@ import asyncio
 import logging
 
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 from .bot import create_dispatcher, setup_menu_button
 from .config import Settings
@@ -66,7 +68,10 @@ async def main() -> None:
     downloader = InstagramDownloader(settings)
     activity_tracker = WorkerActivityTracker()
 
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dispatcher = create_dispatcher(settings, pool, activity_tracker, downloader)
     await setup_menu_button(bot, settings)
 
