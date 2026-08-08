@@ -103,3 +103,17 @@ async def get_customized_keys(pool: asyncpg.Pool) -> set[str]:
     if time.monotonic() >= _cache_expires_at:
         await _refresh_cache(pool)
     return set(_cache.keys())
+
+
+async def get_bool(pool: asyncpg.Pool, key: str, default: bool) -> bool:
+    """Boolean settings reuse the same integer-valued table (stored as 0/1)
+    rather than adding a separate schema for a single flag."""
+    if time.monotonic() >= _cache_expires_at:
+        await _refresh_cache(pool)
+    if key in _cache:
+        return bool(_cache[key])
+    return default
+
+
+async def set_bool(pool: asyncpg.Pool, key: str, value: bool, updated_by: int) -> None:
+    await set_int(pool, key, 1 if value else 0, updated_by)

@@ -18,7 +18,9 @@ from .limits import RateLimiter
 from .logging_config import configure_logging
 from .models import DownloadJob
 from .queue import DownloadQueue
+from .runtime_settings import get_bool
 from .texts import get_text
+from .watchlist import record_download_if_watched
 from .worker_state import WorkerActivityTracker
 
 
@@ -82,24 +84,30 @@ async def send_items(
 
 
 async def build_caption(pool: asyncpg.Pool, source_url: str) -> str:
-    """Builds the two-part HTML caption:
+    """Builds the caption. When the "caption link" toggle is on (default):
     1. A hidden link — the editable "link text" wrapped in <a href> pointing
        at the original Instagram post/reel URL. Tapping it opens the
        original post; Telegram does not render a link preview for links
        inside a photo/video caption (only in plain text messages), so
        there's nothing further to configure there.
     2. The plain editable caption text on the line below.
+    When the toggle is off, only the plain caption text is sent (no link
+    line at all) — useful if the link isn't needed for a while without
+    having to clear the link-text field itself.
     Requires HTML parse mode to be set on the Bot instance sending this
     (see standalone.py/webhook.py/worker.py's Bot(default=...) setup) —
     otherwise Telegram would show the raw <a href=...> markup as text.
     """
-    link_text, caption_text = await asyncio.gather(
+    link_enabled, link_text, caption_text = await asyncio.gather(
+        get_bool(pool, "caption_link_enabled", True),
         get_text(pool, "media_caption_link_text"),
         get_text(pool, "media_caption"),
     )
+    escaped_caption = escape(caption_text)
+    if not link_enabled:
+        return escaped_caption
     escaped_url = escape(source_url, quote=True)
     escaped_link_text = escape(link_text)
-    escaped_caption = escape(caption_text)
     return f'<a href="{escaped_url}">{escaped_link_text}</a>\n{escaped_caption}'
 
 
@@ -186,32 +194,45 @@ async def process_job(
     settings: Settings,
     job: DownloadJob,
 ) -> None:
+    status = "completed"
+    media_type: str | None = None
+    item_count = 0
     try:
         notify_status_text(bot, job, pool, "checking")
         result = await downloader.resolve(job.source_url)
         items = result.items
         total = len(items)
+        item_count = total
+        media_type = items[0].media_type if items else None
 
         await send_items(bot, pool, downloader, settings, job, items, total)
 
         if result.partial:
             await update_status(bot, job, await get_text(pool, "partial_carousel"))
+            status = "partial"
         else:
             await update_status(bot, job, await get_text(pool, "done"))
         logger.info("job_completed job_id=%s items=%s partial=%s", job.job_id, total, result.partial)
     except Exception as error:
+        status = "failed"
         logger.exception("job_failed job_id=%s", job.job_id)
         message = await user_error_message(pool, error)
         await update_status(bot, job, f"❌ {message}")
     finally:
-        # These three cleanup steps are independent of each other (a
-        # rate-limit slot release, temp-file cleanup, and marking the job
-        # done in Postgres) — running them concurrently instead of one
-        # after another shaves a bit more off the tail of every job.
+        # These steps are independent of each other (a rate-limit slot
+        # release, temp-file cleanup, marking the job done in Postgres, and
+        # a watch-list history write) — running them concurrently instead
+        # of one after another shaves a bit more off the tail of every job.
+        # record_download_if_watched is a single query that only writes if
+        # the user is on the watch list, so it's essentially free for the
+        # common case of an unwatched user.
         await asyncio.gather(
             limiter.release_job_slot(job.user_id, job.job_id),
             downloader.cleanup(str(job.job_id)),
             queue.acknowledge(job),
+            record_download_if_watched(
+                pool, job.user_id, job.source_url, media_type, item_count, status
+            ),
         )
 
 

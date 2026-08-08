@@ -49,9 +49,38 @@ CREATE TABLE IF NOT EXISTS mediahub_rate_daily (
 CREATE TABLE IF NOT EXISTS mediahub_users (
     user_id BIGINT PRIMARY KEY,
     username TEXT,
+    first_name TEXT,
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     is_blocked BOOLEAN NOT NULL DEFAULT false
+);
+
+-- Added after first release: older deployments already have this table
+-- without first_name, so add it if missing rather than assuming a fresh
+-- CREATE TABLE always ran.
+ALTER TABLE mediahub_users ADD COLUMN IF NOT EXISTS first_name TEXT;
+
+CREATE TABLE IF NOT EXISTS mediahub_download_history (
+    history_id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    source_url TEXT NOT NULL,
+    media_type TEXT,
+    item_count INT NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'completed',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mediahub_download_history_user_created
+    ON mediahub_download_history (user_id, created_at DESC);
+
+-- Only users an admin explicitly adds here have their downloads recorded
+-- in mediahub_download_history. Keeps that table small and intentional
+-- (a handful of watched users) instead of logging every download from
+-- every user, which would grow unbounded on a free-tier database.
+CREATE TABLE IF NOT EXISTS mediahub_watched_users (
+    user_id BIGINT PRIMARY KEY,
+    added_by BIGINT NOT NULL,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS mediahub_broadcasts (

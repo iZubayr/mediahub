@@ -4,15 +4,19 @@ MediaHub — Telegram bot orqali public Instagram Reel, video, rasm va carousel 
 
 ## Hozirgi imkoniyatlar
 
-- Instagram URL validatsiyasi;
+- Instagram URL validatsiyasi; **bitta xabarda bir nechta havola** yuborilsa,
+  har biri mustaqil, alohida rate-limit/navbat orqali qayta ishlanadi;
 - public Reel, video, rasm va carousel uchun downloader adapteri —
-  `yt-dlp` orqali, `ignoreerrors="only_download"` bilan carousel’dagi har
+  `yt-dlp` orqali, `ignore_no_formats_error=True` bilan carousel’dagi har
   bir slaydni alohida qayta ishlaydi; format topilmagan (rasm) slaydlar
   yt-dlp’ning o‘z `thumbnails` ma’lumotidan tiklanadi — carousel’ning
   **barcha** elementlari (Instagram’ning tashqi GraphQL’iga
   murojaat qilmasdan) qaytariladi. Faqat yagona-rasmli post uchun (yt-dlp
   o‘zi "video yo‘q" deb butun so‘rovni rad etganda) `instaloader`, so‘ng
   Open Graph scrape ikkinchi darajali fallback sifatida ishlatiladi;
+- har bir yuborilgan media’ning tagyozuvi (caption) ikki qismli: original
+  postga yashiringan havola (matni tahrirlanadi, admin panel orqali
+  butunlay yoqib/o‘chirib qo‘yish ham mumkin) + pastda oddiy caption matni;
 - stream-first Telegram upload (`URLInputFile`);
 - stream ishlamasa, chunked temporary-file fallback;
 - Postgres (Supabase) asosidagi queue va cheklangan worker pool — Redis kerak emas;
@@ -104,6 +108,15 @@ adminlarga ko‘rinadi — oddiy foydalanuvchilar bu tugmani ko‘rmaydi.
   qiymat ruxsat etilgan oralig‘i bilan ko‘rsatiladi; ↩️ orqali `.env`dagi
   standart qiymatga qaytarish mumkin. Bu qiymatlar hozircha admin
   tahrirlagandan keyin darhol (15 soniyalik keshdan so‘ng) kuchga kiradi.
+- **🔍 Foydalanuvchilar** — ID, @username yoki ism bo‘yicha qidiruv
+  (botga hech bo‘lmasa bir marta yozgan barcha foydalanuvchilar orasidan).
+  Topilgan foydalanuvchini **⭐ Ro‘yxatga qo‘shish** bilan «kuzatiladigan»
+  qilib belgilash mumkin — shundan keyingina uning yuklagan har bir
+  post/reel havolasi va sanasi saqlanadi (**🗂 Tarixni ko‘rish**). Boshqa
+  hech bir foydalanuvchining yuklash tarixi saqlanmaydi — bu ro‘yxat
+  qasddan kichik va boshqariladigan qolishi uchun (Supabase Free
+  tarifida cheksiz o‘sadigan log emas). **📋 Ro‘yxat** — hozir
+  kuzatilayotgan barcha foydalanuvchilarni ko‘rsatadi.
 
 Panel ichidagi barcha tugmalar **shu xabarning o‘zini** (`edit_message_text`
 orqali) yangilaydi — har bosishda yangi xabar kelib, chatni to‘ldirmaydi.

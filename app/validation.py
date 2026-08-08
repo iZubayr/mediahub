@@ -15,6 +15,20 @@ def extract_url(text: str) -> str | None:
     return match.group(0).rstrip(".,!?)]}")
 
 
+def extract_urls(text: str) -> list[str]:
+    """Returns every URL found in `text`, in the order they appear.
+    Duplicates are removed (keeping first occurrence) so pasting the same
+    link twice doesn't queue it twice."""
+    seen: set[str] = set()
+    urls: list[str] = []
+    for match in URL_PATTERN.finditer(text):
+        url = match.group(0).rstrip(".,!?)]}")
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
 def validate_instagram_url(value: str) -> str:
     parsed = urlparse(value.strip())
     host = (parsed.hostname or "").lower().rstrip(".")

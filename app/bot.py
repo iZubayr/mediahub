@@ -32,7 +32,7 @@ from .runtime_settings import get_int
 from .texts import get_text
 from .ui_constants import ADMIN_PANEL_BUTTON_TEXT
 from .users import upsert_user
-from .validation import extract_url, validate_instagram_url
+from .validation import extract_urls, validate_instagram_url
 from .worker_state import WorkerActivityTracker
 
 
@@ -118,7 +118,9 @@ def create_dispatcher(
     @router.message.middleware()
     async def track_user(handler, message: Message, data):
         if message.from_user is not None and message.chat.type == ChatType.PRIVATE:
-            await upsert_user(pool, message.from_user.id, message.from_user.username)
+            await upsert_user(
+                pool, message.from_user.id, message.from_user.username, message.from_user.first_name
+            )
         return await handler(message, data)
 
     @router.callback_query(F.data == "force_sub_check")
@@ -159,18 +161,54 @@ def create_dispatcher(
             return
 
         user_id = message.from_user.id
-        source_url = extract_url(message.text)
-        if source_url is None:
+        source_urls = extract_urls(message.text)
+        if not source_urls:
             await message.answer(await get_text(pool, "invalid_link"))
             return
 
-        try:
-            source_url = validate_instagram_url(source_url)
-        except Exception as validation_error:
-            await message.answer(
-                str(validation_error) or await get_text(pool, "invalid_instagram_url")
-            )
+        valid_urls: list[str] = []
+        for raw_url in source_urls:
+            try:
+                valid_urls.append(validate_instagram_url(raw_url))
+            except Exception as validation_error:
+                # A message with several links where only some are valid
+                # Instagram URLs still processes the valid ones; the
+                # rejection message is shown once, keyed to whichever URL
+                # failed first, so the user knows something was skipped
+                # without a wall of repeated errors for a 10-link message.
+                if len(source_urls) == 1:
+                    await message.answer(
+                        str(validation_error) or await get_text(pool, "invalid_instagram_url")
+                    )
+                    return
+
+        if not valid_urls:
+            await message.answer(await get_text(pool, "invalid_instagram_url"))
             return
+
+        await asyncio.gather(
+            *(
+                _process_single_link(
+                    message, bot, pool, queue, limiter, settings, activity_tracker, downloader, source_url
+                )
+                for source_url in valid_urls
+            )
+        )
+
+    async def _process_single_link(
+        message: Message,
+        bot: Bot,
+        pool: asyncpg.Pool,
+        queue: DownloadQueue,
+        limiter: RateLimiter,
+        settings: Settings,
+        activity_tracker: WorkerActivityTracker | None,
+        downloader: InstagramDownloader | None,
+        source_url: str,
+    ) -> None:
+        if message.from_user is None:
+            return
+        user_id = message.from_user.id
 
         try:
             allowed_per_minute, allowed_per_day, queued_text = await asyncio.gather(

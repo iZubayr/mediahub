@@ -127,6 +127,7 @@ async def test_process_job_cleanup_runs_concurrently() -> None:
         patch("app.worker.get_text", AsyncMock(return_value="text")),
         patch("app.worker.notify_status_text", MagicMock()),
         patch("app.worker.update_status", AsyncMock()),
+        patch("app.worker.record_download_if_watched", AsyncMock()),
     ):
         await worker_module.process_job(bot, pool, queue, limiter, downloader, settings, job)
 
@@ -136,3 +137,38 @@ async def test_process_job_cleanup_runs_concurrently() -> None:
     starts = [event for event in call_order if event.endswith("_start")]
     first_end_index = next(i for i, event in enumerate(call_order) if event.endswith("_end"))
     assert all(call_order.index(s) < first_end_index for s in starts)
+
+
+@pytest.mark.asyncio
+async def test_process_job_records_history_with_failed_status_on_error() -> None:
+    """When resolve() raises, process_job's finally block must still call
+    record_download_if_watched, tagged with status="failed" -- so a watched
+    user's failed attempts are visible in their history too, not just
+    successes."""
+    from app import worker as worker_module
+
+    job = _fake_job()
+    bot = MagicMock()
+    pool = MagicMock()
+    queue = MagicMock()
+    limiter = MagicMock()
+    downloader = MagicMock()
+    settings = MagicMock()
+
+    limiter.release_job_slot = AsyncMock()
+    downloader.cleanup = AsyncMock()
+    queue.acknowledge = AsyncMock()
+    downloader.resolve = AsyncMock(side_effect=Exception("boom"))
+
+    record_mock = AsyncMock()
+
+    with (
+        patch("app.worker.get_text", AsyncMock(return_value="text")),
+        patch("app.worker.notify_status_text", MagicMock()),
+        patch("app.worker.update_status", AsyncMock()),
+        patch("app.worker.record_download_if_watched", record_mock),
+    ):
+        await worker_module.process_job(bot, pool, queue, limiter, downloader, settings, job)
+
+    record_mock.assert_awaited_once()
+    assert record_mock.call_args.kwargs.get("status") == "failed" or record_mock.call_args.args[-1] == "failed"

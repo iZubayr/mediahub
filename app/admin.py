@@ -11,7 +11,15 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .channels import add_channel, list_channels, normalize_chat_ref, remove_channel_by_index
 from .config import Settings
 from .force_sub import invalidate_channel_cache
-from .runtime_settings import RATE_LIMIT_DEFS, RATE_LIMIT_DEFS_BY_KEY, get_int, reset_int, set_int
+from .runtime_settings import (
+    RATE_LIMIT_DEFS,
+    RATE_LIMIT_DEFS_BY_KEY,
+    get_bool,
+    get_int,
+    reset_int,
+    set_bool,
+    set_int,
+)
 from .texts import TEXT_DEFS, get_text, reset_text, set_text
 from .ui_constants import ADMIN_PANEL_BUTTON_TEXT
 from .users import (
@@ -20,6 +28,14 @@ from .users import (
     finish_broadcast,
     iter_broadcast_targets,
     mark_blocked,
+)
+from .watchlist import (
+    add_watched_user,
+    get_history,
+    is_watched,
+    list_watched_users,
+    remove_watched_user,
+    search_users,
 )
 
 
@@ -68,6 +84,7 @@ class PendingAction(Enum):
     ADD_CHANNEL = auto()
     EDIT_TEXT = auto()
     EDIT_LIMIT = auto()
+    SEARCH_USER = auto()
 
 
 # user_id -> (action, extra) where extra carries e.g. the text_key being edited
@@ -86,6 +103,7 @@ def _main_menu_markup() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📡 Majburiy obuna kanallari", callback_data="admin:channels")],
             [InlineKeyboardButton(text="✏️ Matnlarni tahrirlash", callback_data="admin:texts")],
             [InlineKeyboardButton(text="⚙️ Rate limit sozlamalari", callback_data="admin:limits")],
+            [InlineKeyboardButton(text="🔍 Foydalanuvchilar", callback_data="admin:users")],
         ]
     )
 
@@ -120,14 +138,16 @@ def _texts_list_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _text_detail_markup(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✏️ Tahrirlash", callback_data=f"admin:dotext:{key}")],
-            [InlineKeyboardButton(text="↩️ Standartga qaytarish", callback_data=f"admin:resettext:{key}")],
-            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:texts")],
-        ]
-    )
+def _text_detail_markup(key: str, caption_link_enabled: bool = True) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="✏️ Tahrirlash", callback_data=f"admin:dotext:{key}")],
+        [InlineKeyboardButton(text="↩️ Standartga qaytarish", callback_data=f"admin:resettext:{key}")],
+    ]
+    if key == "media_caption_link_text":
+        toggle_label = "🔴 Havolani o‘chirish" if caption_link_enabled else "🟢 Havolani yoqish"
+        rows.append([InlineKeyboardButton(text=toggle_label, callback_data="admin:togglecaptionlink")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:texts")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _limits_list_markup() -> InlineKeyboardMarkup:
@@ -147,6 +167,43 @@ def _limit_detail_markup(key: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:limits")],
         ]
     )
+
+
+def _users_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔎 Qidirish", callback_data="admin:searchuser")],
+            [InlineKeyboardButton(text="📋 Ro‘yxat", callback_data="admin:watchedusers")],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:home")],
+        ]
+    )
+
+
+def _search_results_markup(results: list, back_target: str = "admin:users") -> InlineKeyboardMarkup:
+    rows = []
+    for result in results:
+        label = result.first_name or (f"@{result.username}" if result.username else str(result.user_id))
+        marker = "⭐ " if result.is_watched else ""
+        rows.append(
+            [InlineKeyboardButton(text=f"{marker}{label}", callback_data=f"admin:viewuser:{result.user_id}")]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data=back_target)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _user_detail_markup(user_id: int, is_watched: bool) -> InlineKeyboardMarkup:
+    toggle = (
+        InlineKeyboardButton(text="🗑 Ro‘yxatdan olib tashlash", callback_data=f"admin:unwatchuser:{user_id}")
+        if is_watched
+        else InlineKeyboardButton(text="⭐ Ro‘yxatga qo‘shish", callback_data=f"admin:watchuser:{user_id}")
+    )
+    rows = [[toggle]]
+    if is_watched:
+        rows.append(
+            [InlineKeyboardButton(text="🗂 Tarixni ko‘rish", callback_data=f"admin:userhistory:{user_id}")]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin:users")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
@@ -243,8 +300,10 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
 
         elif action.startswith("edittext:"):
             key = action.split(":", 1)[1]
+            caption_link_enabled = await get_bool(pool, "caption_link_enabled", True)
             await callback.message.edit_text(
-                await _text_detail_text(pool, key), reply_markup=_text_detail_markup(key)
+                await _text_detail_text(pool, key),
+                reply_markup=_text_detail_markup(key, caption_link_enabled),
             )
 
         elif action.startswith("dotext:"):
@@ -263,8 +322,18 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
         elif action.startswith("resettext:"):
             key = action.split(":", 1)[1]
             await reset_text(pool, key)
+            caption_link_enabled = await get_bool(pool, "caption_link_enabled", True)
             await callback.message.edit_text(
-                await _text_detail_text(pool, key), reply_markup=_text_detail_markup(key)
+                await _text_detail_text(pool, key),
+                reply_markup=_text_detail_markup(key, caption_link_enabled),
+            )
+
+        elif action == "togglecaptionlink":
+            current = await get_bool(pool, "caption_link_enabled", True)
+            await set_bool(pool, "caption_link_enabled", not current, updated_by=admin_id)
+            await callback.message.edit_text(
+                await _text_detail_text(pool, "media_caption_link_text"),
+                reply_markup=_text_detail_markup("media_caption_link_text", not current),
             )
 
         elif action == "limits":
@@ -296,6 +365,63 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
             await reset_int(pool, key)
             await callback.message.edit_text(
                 await _limit_detail_text(pool, key, settings), reply_markup=_limit_detail_markup(key)
+            )
+
+        elif action == "users":
+            _pending.pop(admin_id, None)
+            await callback.message.edit_text(
+                "Foydalanuvchilar bilan ishlash:", reply_markup=_users_menu_markup()
+            )
+
+        elif action == "searchuser":
+            _pending[admin_id] = (PendingAction.SEARCH_USER, None)
+            await callback.message.edit_text(
+                "Qidiruv uchun ID, @username yoki ismni yuboring.\n"
+                "Bekor qilish uchun /cancel.",
+                reply_markup=_back_markup("admin:users"),
+            )
+
+        elif action == "watchedusers":
+            watched = await list_watched_users(pool)
+            if not watched:
+                await callback.message.edit_text(
+                    "Ro‘yxat bo‘sh. Qidiruv orqali foydalanuvchi qo‘shishingiz mumkin.",
+                    reply_markup=_users_menu_markup(),
+                )
+            else:
+                await callback.message.edit_text(
+                    "Kuzatilayotgan foydalanuvchilar:",
+                    reply_markup=_search_results_markup(watched, back_target="admin:users"),
+                )
+
+        elif action.startswith("viewuser:"):
+            user_id = int(action.split(":", 1)[1])
+            await callback.message.edit_text(
+                await _user_detail_text(pool, user_id),
+                reply_markup=_user_detail_markup(user_id, await is_watched(pool, user_id)),
+            )
+
+        elif action.startswith("watchuser:"):
+            user_id = int(action.split(":", 1)[1])
+            await add_watched_user(pool, user_id, added_by=admin_id)
+            await callback.message.edit_text(
+                await _user_detail_text(pool, user_id),
+                reply_markup=_user_detail_markup(user_id, True),
+            )
+
+        elif action.startswith("unwatchuser:"):
+            user_id = int(action.split(":", 1)[1])
+            await remove_watched_user(pool, user_id)
+            await callback.message.edit_text(
+                await _user_detail_text(pool, user_id),
+                reply_markup=_user_detail_markup(user_id, False),
+            )
+
+        elif action.startswith("userhistory:"):
+            user_id = int(action.split(":", 1)[1])
+            await callback.message.edit_text(
+                await _user_history_text(pool, user_id),
+                reply_markup=_back_markup(f"admin:viewuser:{user_id}"),
             )
 
         await callback.answer()
@@ -346,6 +472,20 @@ def create_admin_router(settings: Settings, pool: asyncpg.Pool) -> Router:
             await set_int(pool, extra, value, updated_by=admin_id)
             await message.answer(f"✅ Yangilandi.\n\n{await _limit_detail_text(pool, extra, settings)}")
 
+        elif action is PendingAction.SEARCH_USER:
+            results = await search_users(pool, message.text)
+            if not results:
+                await message.answer(
+                    "Hech kim topilmadi. Foydalanuvchi botga hech bo‘lmasa bir marta "
+                    "yozgan bo‘lishi kerak.",
+                    reply_markup=_back_markup("admin:users"),
+                )
+            else:
+                await message.answer(
+                    f"Topildi: {len(results)} ta natija.",
+                    reply_markup=_search_results_markup(results),
+                )
+
     return router
 
 
@@ -379,7 +519,12 @@ async def _text_detail_text(pool: asyncpg.Pool, key: str) -> str:
     current = await get_text(pool, key)
     customized = key in await get_customized_keys(pool)
     status = "✏️ tahrirlangan" if customized else "standart"
-    return f"«{text_def.label}» ({status}):\n\n{current}"
+    text = f"«{text_def.label}» ({status}):\n\n{current}"
+    if key == "media_caption_link_text":
+        link_enabled = await get_bool(pool, "caption_link_enabled", True)
+        state = "🟢 Yoqilgan" if link_enabled else "🔴 O‘chirilgan"
+        text += f"\n\nHolati: {state}"
+    return text
 
 
 async def _limit_detail_text(pool: asyncpg.Pool, key: str, settings: Settings) -> str:
@@ -390,6 +535,35 @@ async def _limit_detail_text(pool: asyncpg.Pool, key: str, settings: Settings) -
     customized = key in await get_customized_keys(pool)
     status = "✏️ tahrirlangan" if customized else "standart (.env)"
     return f"«{limit_def.label}» ({status}): {current}\n\n{limit_def.help}"
+
+
+async def _user_detail_text(pool: asyncpg.Pool, user_id: int) -> str:
+    results = await search_users(pool, str(user_id), limit=1)
+    if not results:
+        return f"Foydalanuvchi topilmadi (ID: {user_id})."
+    user = results[0]
+    name_line = user.first_name or "(ism ko‘rsatilmagan)"
+    username_line = f"@{user.username}" if user.username else "(username yo‘q)"
+    watched_line = "⭐ Ro‘yxatda" if user.is_watched else "Ro‘yxatda emas"
+    return (
+        f"👤 {name_line}\n"
+        f"{username_line}\n"
+        f"ID: {user.user_id}\n\n"
+        f"{watched_line}"
+    )
+
+
+async def _user_history_text(pool: asyncpg.Pool, user_id: int) -> str:
+    entries = await get_history(pool, user_id)
+    if not entries:
+        return "Bu foydalanuvchi uchun hali yuklash tarixi yo‘q."
+    lines = ["🗂 So‘nggi yuklashlar:\n"]
+    status_icons = {"completed": "✅", "partial": "⚠️", "failed": "❌"}
+    for entry in entries:
+        icon = status_icons.get(entry.status, "•")
+        date_part = entry.created_at.split("T")[0]
+        lines.append(f"{icon} {date_part} — {entry.source_url}")
+    return "\n".join(lines)
 
 
 async def _handle_add_channel(message: Message, bot: Bot, pool: asyncpg.Pool, admin_id: int) -> None:

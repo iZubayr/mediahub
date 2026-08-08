@@ -4,20 +4,23 @@ from uuid import UUID, uuid4
 import asyncpg
 
 
-async def upsert_user(pool: asyncpg.Pool, user_id: int, username: str | None) -> None:
+async def upsert_user(
+    pool: asyncpg.Pool, user_id: int, username: str | None, first_name: str | None = None
+) -> None:
     """Records that this user has interacted with the bot. Called from every
     incoming message so the broadcast list always reflects real users, with
     no separate "registration" step to forget."""
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO mediahub_users (user_id, username, first_seen_at, last_seen_at)
-            VALUES ($1, $2, now(), now())
+            INSERT INTO mediahub_users (user_id, username, first_name, first_seen_at, last_seen_at)
+            VALUES ($1, $2, $3, now(), now())
             ON CONFLICT (user_id)
-            DO UPDATE SET username = $2, last_seen_at = now()
+            DO UPDATE SET username = $2, first_name = $3, last_seen_at = now()
             """,
             user_id,
             username,
+            first_name,
         )
 
 

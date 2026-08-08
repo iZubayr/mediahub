@@ -26,12 +26,14 @@ def test_media_caption_formatting_single_vs_multi() -> None:
 async def test_build_caption_wraps_source_url_in_html_link(monkeypatch) -> None:
     """The caption must be: <a href="SOURCE_URL">LINK_TEXT</a>\\nCAPTION_TEXT
     -- a hidden link to the original Instagram post using the editable link
-    text, followed by the editable plain caption on its own line."""
+    text, followed by the editable plain caption on its own line, when the
+    caption-link toggle is enabled (the default)."""
 
     async def fake_get_text(pool, key, **kwargs):
         return {"media_caption_link_text": "Video havolasi", "media_caption": "MediaHub orqali yuklandi"}[key]
 
     monkeypatch.setattr("app.worker.get_text", fake_get_text)
+    monkeypatch.setattr("app.worker.get_bool", AsyncMock(return_value=True))
 
     caption = await build_caption(pool=None, source_url="https://www.instagram.com/reel/ABC123/")
 
@@ -39,6 +41,25 @@ async def test_build_caption_wraps_source_url_in_html_link(monkeypatch) -> None:
         '<a href="https://www.instagram.com/reel/ABC123/">Video havolasi</a>\n'
         "MediaHub orqali yuklandi"
     )
+
+
+@pytest.mark.asyncio
+async def test_build_caption_omits_link_when_toggle_disabled(monkeypatch) -> None:
+    """Regression test for the requested on/off toggle: when
+    caption_link_enabled is False, the caption must be plain text only --
+    no <a href> line at all, not even an empty one."""
+
+    async def fake_get_text(pool, key, **kwargs):
+        return {"media_caption_link_text": "Video havolasi", "media_caption": "MediaHub orqali yuklandi"}[key]
+
+    monkeypatch.setattr("app.worker.get_text", fake_get_text)
+    monkeypatch.setattr("app.worker.get_bool", AsyncMock(return_value=False))
+
+    caption = await build_caption(pool=None, source_url="https://www.instagram.com/reel/ABC123/")
+
+    assert caption == "MediaHub orqali yuklandi"
+    assert "<a href" not in caption
+    assert "Video havolasi" not in caption
 
 
 @pytest.mark.asyncio
@@ -55,6 +76,7 @@ async def test_build_caption_escapes_html_special_characters(monkeypatch) -> Non
         }[key]
 
     monkeypatch.setattr("app.worker.get_text", fake_get_text)
+    monkeypatch.setattr("app.worker.get_bool", AsyncMock(return_value=True))
 
     caption = await build_caption(pool=None, source_url="https://www.instagram.com/reel/ABC123/")
 
