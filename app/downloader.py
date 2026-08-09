@@ -103,7 +103,13 @@ class InstagramDownloader:
         for index, entry in enumerate(raw_entries, start=1):
             item = self._to_media_item(entry, index=index)
             if item.size is not None and item.size > self.settings.max_media_size_bytes:
-                raise MediaTooLarge("Media fayl belgilangan hajm limitidan katta.")
+                size_mb = item.size / (1024 * 1024)
+                limit_mb = self.settings.max_media_size_mb
+                raise MediaTooLarge(
+                    f"Media fayl {size_mb:.0f} MB, ruxsat etilgan limit {limit_mb} MB. "
+                    "Telegram bot orqali fayl yuborishning eng yuqori chegarasi shu — "
+                    "undan katta faylni bot texnik jihatdan yubora olmaydi."
+                )
             items.append(item)
 
         if not items:
@@ -442,15 +448,23 @@ class InstagramDownloader:
             async with client.stream("GET", item.url) as response:
                 response.raise_for_status()
                 content_length = response.headers.get("content-length")
+                limit_mb = self.settings.max_media_size_mb
                 if content_length and int(content_length) > self.settings.max_media_size_bytes:
-                    raise MediaTooLarge("Media fayl belgilangan hajm limitidan katta.")
+                    size_mb = int(content_length) / (1024 * 1024)
+                    raise MediaTooLarge(
+                        f"Media fayl {size_mb:.0f} MB, ruxsat etilgan limit {limit_mb} MB. "
+                        "Telegram bot orqali fayl yuborishning eng yuqori chegarasi shu."
+                    )
 
                 received = 0
                 async with aiofiles.open(target, "wb") as file:
                     async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
                         received += len(chunk)
                         if received > self.settings.max_media_size_bytes:
-                            raise MediaTooLarge("Media fayl belgilangan hajm limitidan katta.")
+                            raise MediaTooLarge(
+                                f"Media fayl {limit_mb} MB limitidan katta chiqdi. "
+                                "Telegram bot orqali fayl yuborishning eng yuqori chegarasi shu."
+                            )
                         await file.write(chunk)
         return target
 

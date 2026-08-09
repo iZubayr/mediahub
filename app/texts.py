@@ -117,8 +117,18 @@ TEXT_DEFS: list[TextDef] = [
     TextDef(
         key="uploading",
         label="Yuklanmoqda",
-        default="⬆️ Yuklanmoqda: {index}/{total}",
+        default="⬆️ Yuklanmoqda: {index}/{total}\nUzun video bo‘lsa, bu bir necha daqiqa davom etishi mumkin — bot ishlamoqda.",
         help="Har bir media fayl yuborilayotganda. {index} va {total} avtomatik.",
+    ),
+    TextDef(
+        key="still_uploading",
+        label="Hali ham yuklanmoqda (heartbeat)",
+        default="⏳ Hali ham yuklanmoqda... ({elapsed_seconds} soniya) Katta fayllar uchun bu normal, bot ishlashda davom etmoqda.",
+        help=(
+            "Yuklash 20 soniyadan ortiq davom etsa, foydalanuvchi \"bot "
+            "qotib qoldi\" deb o‘ylamasligi uchun har 20 soniyada qayta "
+            "yuboriladigan eslatma. {elapsed_seconds} avtomatik."
+        ),
     ),
     TextDef(
         key="done",

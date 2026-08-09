@@ -83,6 +83,39 @@ async def send_items(
     )
 
 
+async def _send_items_with_heartbeat(
+    bot: Bot,
+    pool: asyncpg.Pool,
+    downloader: InstagramDownloader,
+    settings: Settings,
+    job: DownloadJob,
+    items: list[MediaItem],
+    total: int,
+    heartbeat_interval_seconds: float = 20,
+) -> None:
+    """Wraps send_items with a periodic "still working" status update for
+    uploads that take a while (typically a single large video, where
+    send_items itself has no natural progress steps to report between
+    start and finish). Without this, a multi-minute upload leaves the same
+    status text on screen the whole time, which reads as the bot having
+    frozen. The heartbeat task is cancelled the moment send_items actually
+    finishes, so a fast upload never shows it at all.
+    """
+
+    async def _heartbeat() -> None:
+        elapsed = 0.0
+        while True:
+            await asyncio.sleep(heartbeat_interval_seconds)
+            elapsed += heartbeat_interval_seconds
+            notify_status_text(bot, job, pool, "still_uploading", elapsed_seconds=int(elapsed))
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
+    try:
+        await send_items(bot, pool, downloader, settings, job, items, total)
+    finally:
+        heartbeat_task.cancel()
+
+
 async def build_caption(pool: asyncpg.Pool, source_url: str) -> str:
     """Builds the caption. When the "caption link" toggle is on (default):
     1. A hidden link — the editable "link text" wrapped in <a href> pointing
@@ -205,7 +238,7 @@ async def process_job(
         item_count = total
         media_type = items[0].media_type if items else None
 
-        await send_items(bot, pool, downloader, settings, job, items, total)
+        await _send_items_with_heartbeat(bot, pool, downloader, settings, job, items, total)
 
         if result.partial:
             await update_status(bot, job, await get_text(pool, "partial_carousel"))
