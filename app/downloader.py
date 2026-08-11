@@ -4,6 +4,7 @@ from html import unescape
 import logging
 from pathlib import Path
 import re
+import time
 from typing import Any
 from urllib.parse import urljoin
 
@@ -44,6 +45,18 @@ META_CONTENT_PATTERN = re.compile(
 NO_VIDEO_ERROR_MARKERS = (
     "there is no video in this post",
     "no video formats found",
+)
+
+# Instagram sometimes refuses yt-dlp's specific anonymous request with an
+# empty response for a post that IS genuinely public (confirmed working in
+# a logged-in browser) — this is Instagram's anti-bot system being
+# selective, not a real "login required" wall. Since instaloader and the
+# Open Graph scrape use different request mechanisms (different endpoints,
+# headers, and request shape), either can succeed where yt-dlp's request
+# was refused, so this also routes into the same fallback chain rather than
+# failing immediately.
+EMPTY_RESPONSE_ERROR_MARKERS = (
+    "instagram sent an empty media response",
 )
 
 
@@ -181,8 +194,32 @@ class InstagramDownloader:
                 # Login walls, rate limits, and deleted posts should still
                 # surface as their real error rather than silently retrying
                 # with something that would just fail again confusingly.
-                if any(marker in message for marker in NO_VIDEO_ERROR_MARKERS):
-                    logger.info("no_video_detected trying_instaloader url=%s", source_url)
+                is_no_video = any(marker in message for marker in NO_VIDEO_ERROR_MARKERS)
+                is_empty_response = any(marker in message for marker in EMPTY_RESPONSE_ERROR_MARKERS)
+
+                if is_empty_response:
+                    # This specific error has been observed to be
+                    # intermittent — Instagram's anti-bot check on the
+                    # anonymous request sometimes passes on a retry a few
+                    # seconds later for a post that's genuinely public. One
+                    # quick retry before falling through to the other
+                    # fallback paths costs little and can recover a post
+                    # that would otherwise need a completely different
+                    # extraction method.
+                    logger.info("empty_response_retrying url=%s", source_url)
+                    time.sleep(3)
+                    try:
+                        info = ydl.extract_info(source_url, download=False)
+                        return info, False
+                    except DownloadError as retry_exc:
+                        logger.warning(
+                            "empty_response_retry_failed url=%s error=%s",
+                            source_url,
+                            retry_exc,
+                        )
+
+                if is_no_video or is_empty_response:
+                    logger.info("trying_instaloader_fallback url=%s", source_url)
                     try:
                         result = self._extract_via_instaloader(source_url)
                         entry_count = len(result.get("entries", [result]))
@@ -499,6 +536,11 @@ class InstagramDownloader:
         if any(marker in message for marker in NO_VIDEO_ERROR_MARKERS):
             return UnsupportedMedia(
                 "Bu postdagi media rasm yoki qo‘llab-quvvatlanmaydigan turda."
+            )
+        if any(marker in message for marker in EMPTY_RESPONSE_ERROR_MARKERS):
+            return UnsupportedMedia(
+                "Instagram bu postni hozircha ochib bermayapti (vaqtincha cheklov "
+                "bo‘lishi mumkin). Bir necha daqiqadan so‘ng qayta urinib ko‘ring."
             )
         if any(word in message for word in ("rate-limit", "rate limit", "429", "too many requests")):
             return UnsupportedMedia(
