@@ -44,7 +44,7 @@ cd /home/zubayr/mediahub
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --pre -r requirements.txt
 mkdir -p tmp
 chmod 700 tmp
 ```
@@ -54,6 +54,10 @@ chmod 700 tmp
 impersonation ishlatadi. Usiz public post brauzerda ochiq bo'lsa ham serverda
 `Instagram sent an empty media response` xatosi chiqishi mumkin. Deploy script
 buni virtual muhitning o'zida avtomatik tekshiradi.
+
+Instagram extractor tez-tez o'zgaradigan tashqi API'ga bog'liq bo'lgani uchun
+bot `yt-dlp`ning **nightly** relizidan foydalanadi. Bu upstream tavsiya qilgan
+kanal bo'lib, Instagram'ga oid tuzatishlar stable relizni kutmasdan keladi.
 
 ## 4. `.env` sozlamalari
 
@@ -82,6 +86,10 @@ UPLOAD_TIMEOUT_SECONDS=180
 RETRY_ATTEMPTS=2
 TEMP_DIR=/home/zubayr/mediahub/tmp
 
+# Ixtiyoriy: public link browserda faqat login bilan ochilsa.
+# Netscape formatidagi cookie faylini git project ichida EMAS, private joyda saqlang.
+INSTAGRAM_COOKIES_FILE=/home/zubayr/.secrets/mediahub-instagram-cookies.txt
+
 ADMIN_IDS=your_numeric_telegram_id
 ```
 
@@ -91,6 +99,23 @@ har bir foydalanuvchisi nomidan sizning shaxsiy Instagram hisobingizni
 ishlatgan bo'lardi, va bu hisobingiz bloklanish xavfini oshiradi. Bot faqat
 public post, Reel va carouselni qo'llab-quvvatlaydi; story havolasi yuborilsa,
 foydalanuvchiga aniq xabar bilan rad etiladi.
+
+Yuqoridagi cookie bo'yicha eski cheklov endi faqat default holatga tegishli:
+cookie sozlanmasa bot anonim ishlaydi. Ba'zi public Reel/postlar Instagram
+tomonidan anonim data-markaz IP'lariga media o'rniga 200-statusli xato sahifasi
+bilan qaytariladi. Shunday postlar uchun `INSTAGRAM_COOKIES_FILE`ni faqat
+**alohida bot akkaunti**ning Netscape-format cookie fayliga sozlang (shaxsiy
+asosiy akkauntingiz emas):
+
+```bash
+mkdir -p /home/zubayr/.secrets
+chmod 700 /home/zubayr/.secrets
+# cookie faylini SSH/SFTP orqali shu joyga yuklang
+chmod 600 /home/zubayr/.secrets/mediahub-instagram-cookies.txt
+```
+
+Cookie faylini GitHub, `.env` qiymati yoki chatga yubormang. Instagram bunday
+sessiyani vaqt o'tib bekor qilishi mumkin; shunda faylni yangilash kerak bo'ladi.
 
 Majburiy obuna kanallari endi `.env`da emas — bot ishga tushgach, Telegram'da
 o'zingizga (admin sifatida) yozing:

@@ -26,3 +26,13 @@ def test_admin_id_set_empty_by_default(monkeypatch) -> None:
     monkeypatch.delenv("ADMIN_IDS", raising=False)
     settings = Settings()
     assert settings.admin_id_set == set()
+
+
+def test_instagram_cookies_file_reads_from_environment(monkeypatch) -> None:
+    for key, value in _base_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("INSTAGRAM_COOKIES_FILE", "/srv/secrets/instagram-cookies.txt")
+
+    settings = Settings()
+
+    assert settings.instagram_cookies_file == "/srv/secrets/instagram-cookies.txt"

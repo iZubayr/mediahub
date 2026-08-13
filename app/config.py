@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     retry_attempts: int = Field(default=2, alias="RETRY_ATTEMPTS")
     temp_dir: str = Field(default="/tmp/mediahub", alias="TEMP_DIR")
 
+    # Optional Netscape-format cookies from a dedicated Instagram account.
+    # This is only needed for posts that Instagram lets a logged-in account
+    # view but deliberately hides from anonymous server requests.
+    instagram_cookies_file: str = Field(default="", alias="INSTAGRAM_COOKIES_FILE")
+
     # Admin panel: comma-separated Telegram numeric user IDs, e.g. "111,222".
     # These are the only accounts allowed to use /admin, /broadcast, /stats,
     # and to add/remove force-subscribe channels.

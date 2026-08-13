@@ -37,10 +37,10 @@ echo "== Installing dependencies =="
 if ! .venv/bin/python -m pip install -q --upgrade pip; then
     echo "WARNING: pip self-upgrade failed, continuing with existing pip"
 fi
-if ! .venv/bin/python -m pip install -q -r requirements.txt; then
+if ! .venv/bin/python -m pip install -q --pre -r requirements.txt; then
     echo "FATAL: pip install -r requirements.txt failed"
     echo "Re-running verbosely for diagnostics:"
-    .venv/bin/python -m pip install -r requirements.txt
+    .venv/bin/python -m pip install --pre -r requirements.txt
     exit 1
 fi
 echo "Dependencies installed OK"

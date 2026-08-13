@@ -86,6 +86,21 @@ class ResolveResult:
 class InstagramDownloader:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        configured_cookie_file = getattr(settings, "instagram_cookies_file", "")
+        self._cookie_file = (
+            configured_cookie_file.strip()
+            if isinstance(configured_cookie_file, str)
+            else ""
+        )
+        if self._cookie_file:
+            cookie_path = Path(self._cookie_file).expanduser()
+            if not cookie_path.is_file():
+                raise RuntimeError(
+                    "INSTAGRAM_COOKIES_FILE points to a file that does not exist: "
+                    f"{cookie_path}"
+                )
+            self._cookie_file = str(cookie_path)
+            logger.warning("instagram_cookie_auth_enabled")
 
     async def resolve(self, source_url: str) -> ResolveResult:
         try:
@@ -178,13 +193,20 @@ class InstagramDownloader:
             # capacity for other users for minutes.
             "socket_timeout": 15,
         }
-        # Deliberately no cookie/login support: authenticating as a real
+        # Cookie authentication is deliberately opt-in: using a real
         # Instagram account to scrape on behalf of arbitrary bot users risks
         # that account being flagged and banned by Instagram, and the bot is
         # scoped to public content only (see validation.py, which rejects
         # story URLs outright since those need a logged-in session — no
         # login-free method exists for stories; every working open-source
         # implementation found requires either a login session or cookies).
+
+        if self._cookie_file:
+            # Instagram can return a 200-status error page instead of media
+            # metadata for a reel that is viewable only to logged-in users.
+            # Stories remain rejected by URL validation; this is not general
+            # private-content support.
+            options["cookiefile"] = self._cookie_file
 
         with YoutubeDL(options) as ydl:
             try:

@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from yt_dlp.utils import DownloadError
@@ -74,3 +75,31 @@ def test_empty_media_response_maps_to_actionable_error_when_all_fallbacks_fail()
     mapped = downloader._map_download_error(error)
     message = str(mapped)
     assert "vaqtincha" in message or "qayta urinib" in message
+
+
+def test_cookie_file_is_passed_to_ytdlp_when_configured(tmp_path: Path) -> None:
+    cookie_file = tmp_path / "instagram-cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    settings = MagicMock()
+    settings.max_media_size_bytes = 100 * 1024 * 1024
+    settings.instagram_cookies_file = str(cookie_file)
+    downloader = InstagramDownloader(settings)
+    captured_options = {}
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            captured_options.update(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"id": "x", "url": "https://x/video.mp4", "ext": "mp4"}
+
+    with patch("app.downloader.YoutubeDL", FakeYoutubeDL):
+        downloader._extract_info("https://www.instagram.com/reel/ABC123/")
+
+    assert captured_options["cookiefile"] == str(cookie_file)
