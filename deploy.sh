@@ -45,6 +45,17 @@ if ! .venv/bin/python -m pip install -q -r requirements.txt; then
 fi
 echo "Dependencies installed OK"
 
+echo "== Checking Instagram browser impersonation support =="
+# yt-dlp's Instagram extractor relies on curl_cffi for browser/TLS
+# impersonation. `pip install yt-dlp` alone does not install it, which causes
+# public posts to fail with "Instagram sent an empty media response" on
+# server IPs. Check the service virtual environment, not the system Python.
+if ! .venv/bin/python -m yt_dlp --list-impersonate-targets 2>&1 | grep -Eq 'curl_cffi[[:space:]]*$'; then
+    echo "FATAL: yt-dlp browser impersonation is unavailable (curl_cffi missing or unusable)"
+    exit 1
+fi
+echo "Instagram browser impersonation support OK"
+
 echo "== Restarting standalone service (if running) =="
 # The recommended run mode: one Service running app.standalone (polling +
 # worker together, no separate webhook Site needed). AlwaysData restarts

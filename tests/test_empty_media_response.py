@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from yt_dlp.utils import DownloadError
 
-from app.downloader import InstagramDownloader
+from app.downloader import EMPTY_RESPONSE_RETRY_DELAY_SECONDS, InstagramDownloader
 
 
 def _downloader() -> InstagramDownloader:
@@ -31,11 +31,13 @@ def test_empty_media_response_retries_and_succeeds() -> None:
 
     with (
         patch("app.downloader.YoutubeDL.extract_info", fake_extract_info),
-        patch("app.downloader.time.sleep"),  # skip the real 3s delay in tests
+        patch("app.downloader.time.sleep") as sleep_mock,  # skip the real delay in tests
     ):
         info, partial = downloader._extract_info("https://www.instagram.com/reel/DbyKmUPoLA0/")
 
     assert call_count["n"] == 2
+    sleep_mock.assert_called_once_with(EMPTY_RESPONSE_RETRY_DELAY_SECONDS)
+    assert EMPTY_RESPONSE_RETRY_DELAY_SECONDS < 1
     assert info["url"] == "https://x/video.mp4"
     assert partial is False
 

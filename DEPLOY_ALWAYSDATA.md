@@ -49,6 +49,12 @@ mkdir -p tmp
 chmod 700 tmp
 ```
 
+`requirements.txt` yt-dlp bilan birga `curl_cffi`ni ham o'rnatadi. Bu
+**majburiy**: Instagram'ning hozirgi yt-dlp extractori brauzer/TLS
+impersonation ishlatadi. Usiz public post brauzerda ochiq bo'lsa ham serverda
+`Instagram sent an empty media response` xatosi chiqishi mumkin. Deploy script
+buni virtual muhitning o'zida avtomatik tekshiradi.
+
 ## 4. `.env` sozlamalari
 
 ```env

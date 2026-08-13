@@ -59,6 +59,10 @@ EMPTY_RESPONSE_ERROR_MARKERS = (
     "instagram sent an empty media response",
 )
 
+# Keeps a transient Instagram refusal from occupying an AlwaysData worker slot
+# for several seconds before the independent fallbacks get a chance to run.
+EMPTY_RESPONSE_RETRY_DELAY_SECONDS = 0.5
+
 
 @dataclass(slots=True)
 class MediaItem:
@@ -207,7 +211,7 @@ class InstagramDownloader:
                     # that would otherwise need a completely different
                     # extraction method.
                     logger.info("empty_response_retrying url=%s", source_url)
-                    time.sleep(3)
+                    time.sleep(EMPTY_RESPONSE_RETRY_DELAY_SECONDS)
                     try:
                         info = ydl.extract_info(source_url, download=False)
                         return info, False
