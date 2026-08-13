@@ -169,7 +169,15 @@ def create_dispatcher(
         valid_urls: list[str] = []
         for raw_url in source_urls:
             try:
-                valid_urls.append(validate_instagram_url(raw_url))
+                # Stories need an Instagram session. Only the account owner
+                # and admins may submit them; all other users keep receiving
+                # the standard "Story not supported" validation message.
+                valid_urls.append(
+                    validate_instagram_url(
+                        raw_url,
+                        allow_stories=is_admin(settings, user_id),
+                    )
+                )
             except Exception as validation_error:
                 # A message with several links where only some are valid
                 # Instagram URLs still processes the valid ones; the

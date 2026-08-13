@@ -193,7 +193,8 @@ class InstagramDownloader:
             # capacity for other users for minutes.
             "socket_timeout": 15,
         }
-        # Cookie authentication is deliberately opt-in: using a real
+        # Cookie authentication is deliberately opt-in. Story URLs are
+        # accepted only from admins by the bot router. Using a real
         # Instagram account to scrape on behalf of arbitrary bot users risks
         # that account being flagged and banned by Instagram, and the bot is
         # scoped to public content only (see validation.py, which rejects
@@ -204,8 +205,8 @@ class InstagramDownloader:
         if self._cookie_file:
             # Instagram can return a 200-status error page instead of media
             # metadata for a reel that is viewable only to logged-in users.
-            # Stories remain rejected by URL validation; this is not general
-            # private-content support.
+            # Router-level authorization prevents regular users from
+            # submitting Story URLs to this shared session.
             options["cookiefile"] = self._cookie_file
 
         with YoutubeDL(options) as ydl:

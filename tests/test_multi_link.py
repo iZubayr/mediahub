@@ -106,6 +106,48 @@ async def test_single_link_still_works_as_before(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_story_link_is_enqueued_for_an_admin_only(monkeypatch) -> None:
+    settings = _settings(monkeypatch, ADMIN_IDS="555")
+
+    class FakePool:
+        pass
+
+    enqueue_mock = AsyncMock()
+    monkeypatch.setattr("app.queue.DownloadQueue.enqueue", enqueue_mock)
+    dispatcher = create_dispatcher(settings, FakePool())
+    bot = _make_bot()
+    story_url = "https://www.instagram.com/stories/someone/123456/"
+    update = Update(update_id=4, message=_make_message(story_url, user_id=555))
+
+    await dispatcher.feed_update(bot, update)
+
+    enqueue_mock.assert_awaited_once()
+    assert enqueue_mock.call_args.args[0].source_url == story_url
+
+
+@pytest.mark.asyncio
+async def test_story_link_remains_rejected_for_a_regular_user(monkeypatch) -> None:
+    settings = _settings(monkeypatch, ADMIN_IDS="555")
+
+    class FakePool:
+        pass
+
+    enqueue_mock = AsyncMock()
+    monkeypatch.setattr("app.queue.DownloadQueue.enqueue", enqueue_mock)
+    dispatcher = create_dispatcher(settings, FakePool())
+    bot = _make_bot()
+    update = Update(
+        update_id=5,
+        message=_make_message("https://www.instagram.com/stories/someone/123456/", user_id=777),
+    )
+
+    await dispatcher.feed_update(bot, update)
+
+    enqueue_mock.assert_not_awaited()
+    assert bot.called is True
+
+
+@pytest.mark.asyncio
 async def test_mixed_valid_and_invalid_links_processes_only_valid_ones(monkeypatch) -> None:
     settings = _settings(monkeypatch)
 

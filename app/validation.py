@@ -29,7 +29,7 @@ def extract_urls(text: str) -> list[str]:
     return urls
 
 
-def validate_instagram_url(value: str) -> str:
+def validate_instagram_url(value: str, *, allow_stories: bool = False) -> str:
     parsed = urlparse(value.strip())
     host = (parsed.hostname or "").lower().rstrip(".")
 
@@ -39,15 +39,16 @@ def validate_instagram_url(value: str) -> str:
     if not parsed.path or parsed.path == "/":
         raise InvalidInstagramUrl("Media post yoki Reel havolasini yuboring.")
 
-    if parsed.path.startswith("/stories/"):
+    if parsed.path.startswith("/stories/") and not allow_stories:
         raise InvalidInstagramUrl(
             "Story’lar qo‘llab-quvvatlanmaydi — ular Instagram login talab qiladi. "
             "Post yoki Reel havolasini yuboring."
         )
 
     supported_prefixes = ("/p/", "/reel/", "/reels/", "/tv/")
+    if allow_stories:
+        supported_prefixes += ("/stories/",)
     if not parsed.path.startswith(supported_prefixes):
         raise InvalidInstagramUrl("Bu Instagram havolasi media postga o‘xshamaydi.")
 
     return value.strip()
-

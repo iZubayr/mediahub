@@ -72,6 +72,12 @@ def test_story_url_rejected_with_clear_message() -> None:
         validate_instagram_url("https://www.instagram.com/stories/someone/123456/")
 
 
+def test_story_url_is_allowed_only_when_explicitly_authorized() -> None:
+    url = "https://www.instagram.com/stories/someone/123456/"
+
+    assert validate_instagram_url(url, allow_stories=True) == url
+
+
 def test_login_required_error_is_user_friendly() -> None:
     # Stories are rejected before reaching the downloader (see validation.py),
     # so this now covers the remaining login-wall case: private posts.
